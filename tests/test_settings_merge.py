@@ -70,7 +70,7 @@ class MergeTests(unittest.TestCase):
         sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
         sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:5151", *MODELS, "opus")  # rerun
         self.assertEqual(self.read()["apiKeyHelper"], "/bin/cat /k")
-        sm.unkit(self.dest, self.state)
+        sm.unkit(self.dest, self.state, "/k")
         self.assertEqual(self.read(), mine)
         self.assertFalse(os.path.exists(self.state))
 
@@ -78,20 +78,62 @@ class MergeTests(unittest.TestCase):
         sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
         os.remove(self.state)  # as left by a build without the state file
         sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
-        sm.unkit(self.dest, self.state)
+        sm.unkit(self.dest, self.state, "/k")
         self.assertEqual(self.read(), {})
 
-    def test_symlinked_settings_stay_a_symlink_with_their_mode(self):
-        real = os.path.join(self.d, "dotfiles.json")
-        self.write(real, {"theme": "dark"})
-        os.chmod(real, 0o644)
-        os.symlink(real, self.dest)
+    def test_symlinked_settings_are_refused_and_target_untouched(self):
+        main = os.path.join(self.d, "main-settings.json")
+        self.write(main, {"theme": "dark"})
+        os.symlink(main, self.dest)
+        for call in (lambda: sm.check(self.dest),
+                     lambda: sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet"),
+                     lambda: sm.unkit(self.dest, self.state, "/k"),
+                     lambda: sm.share(main, self.dest, self.state)):
+            with self.assertRaises(SystemExit):
+                call()
+        self.assertEqual(self.read(main), {"theme": "dark"})
+        self.assertFalse(os.path.exists(self.state))
+
+    def test_symlinked_state_is_refused(self):
+        other = os.path.join(self.d, "victim.json")
+        os.symlink(other, self.state)
+        with self.assertRaises(SystemExit):
+            sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
+        self.assertFalse(os.path.exists(other))
+
+    def test_unkit_without_state_removes_only_the_routers_values(self):
         sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
-        self.assertTrue(os.path.islink(self.dest))
-        self.assertEqual(os.stat(real).st_mode & 0o777, 0o644)
-        sm.unkit(self.dest, self.state)
-        self.assertTrue(os.path.islink(self.dest))
-        self.assertEqual(self.read(real), {"theme": "dark"})
+        s = self.read()
+        s["env"]["ANTHROPIC_MODEL"] = "user-model"
+        s["env"]["FOO"] = "1"
+        self.write(self.dest, s)
+        os.remove(self.state)
+        sm.unkit(self.dest, self.state, "/k")
+        env = self.read()["env"]
+        self.assertNotIn("apiKeyHelper", self.read())
+        self.assertNotIn("ANTHROPIC_BASE_URL", env)
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertEqual(env["ANTHROPIC_MODEL"], "user-model")
+        self.assertEqual(env["FOO"], "1")
+
+    def test_unkit_without_state_keeps_a_users_own_helper(self):
+        mine = {"apiKeyHelper": "/usr/local/bin/mine",
+                "env": {"ANTHROPIC_BASE_URL": "https://gw.example", "ANTHROPIC_MODEL": "opus"}}
+        self.write(self.dest, mine)
+        sm.unkit(self.dest, self.state, "/k")
+        self.assertEqual(self.read(), mine)
+
+    def test_unkit_removes_a_settings_file_it_created(self):
+        sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
+        sm.unkit(self.dest, self.state, "/k")
+        self.assertFalse(os.path.exists(self.dest))
+
+    def test_malformed_state_is_refused_before_any_write(self):
+        self.write(self.dest, {"apiKeyHelper": "/bin/cat /k"})
+        self.write(self.state, {"prev": [1]})
+        with self.assertRaises(SystemExit):
+            sm.unkit(self.dest, self.state, "/k")
+        self.assertEqual(self.read(), {"apiKeyHelper": "/bin/cat /k"})
 
     def test_share_and_unshare_round_trip(self):
         src = os.path.join(self.d, "src.json")
@@ -132,7 +174,7 @@ class MergeTests(unittest.TestCase):
     def test_unkit_removes_only_router_keys(self):
         self.write(self.dest, {"theme": "dark", "env": {"MY_VAR": "1"}})
         sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
-        sm.unkit(self.dest, self.state)
+        sm.unkit(self.dest, self.state, "/k")
         self.assertEqual(self.read(), {"theme": "dark", "env": {"MY_VAR": "1"}})
 
     def test_apikeyhelper_quotes_path(self):

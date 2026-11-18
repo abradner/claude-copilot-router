@@ -98,6 +98,8 @@ mkdir -p "$HOME/someprofile"; echo x > "$HOME/someprofile/file"
 check "install refuses foreign profile" '"$repo/install.sh" --profile "$HOME/someprofile" 2>&1 | grep -q "not created by this tool"'
 check "install refuses unknown flag"   '! "$repo/install.sh" --bogus >/dev/null 2>&1'
 check "install refuses alias claude"   '"$repo/install.sh" --alias claude 2>&1 | grep -q "replace your normal claude"'
+mkdir -p "$HOME/dangle"; ln -s "$HOME/elsewhere" "$HOME/dangle/.claude-copilot-router"
+check "install refuses dangling marker" '"$repo/install.sh" --profile "$HOME/dangle" 2>&1 | grep -q "not a regular file" && [ ! -e "$HOME/elsewhere" ]'
 mkdir -p "$HOME/oddmark"; print -n "" > "$HOME/oddmark/.claude-copilot-router"
 check "install refuses empty marker"   '"$repo/install.sh" --profile "$HOME/oddmark" --adopt 2>&1 | grep -q "not created or adopted"'
 
@@ -146,6 +148,46 @@ check "uninstall refuses symlinked profile" '[ -f "$HOME/ext/prof/.claude-copilo
 print -r -- "CCR_PROFILE=$HOME/p-none" > "$conf/router.conf"; print -r -- "CCR_PORT=4000" >> "$conf/router.conf"
 un
 check "stale port does not block uninstall" '[ ! -e "$conf" ]'
+mkdir -p "$HOME/p-link2/x"; setup "$HOME/p-link//" ""
+check "uninstall refuses symlink with //" '! print yes | "$repo/uninstall.sh" >/dev/null 2>&1 && [ -f "$HOME/ext/prof/.claude-copilot-router" ]'
+rm -rf -- "$conf"
+setup "$HOME/p-adlink" adopted; echo '{}' > "$HOME/p-adlink/.claude.json"
+print -r -- '{"theme":"dark"}' > "$HOME/.claude/settings.json"; ln -s "$HOME/.claude/settings.json" "$HOME/p-adlink/settings.json"
+check "uninstall stops on symlinked settings" '! print yes | "$repo/uninstall.sh" >/dev/null 2>&1 && [ -e "$HOME/p-adlink/.claude-copilot-router" ]'
+check "main settings untouched"        '[ "$(cat $HOME/.claude/settings.json)" = "{\"theme\":\"dark\"}" ]'
+rm -rf -- "$conf"
+
+# the router home must never be a git checkout (uninstall rm -rf's it)
+mkdir -p "$conf/.git"
+check "router home with .git refused"  '! lib ccr_validate'
+rm -rf -- "$conf"
+
+# Whole install/uninstall runs, with stub uv and claude (no network, nothing installed).
+mkdir -p "$T/bin"
+print -r -- '#!/bin/zsh -f
+[ "$1" = venv ] && { mkdir -p "$4/bin"; ln -s "$(command -v python3)" "$4/bin/python"; }
+exit 0' > "$T/bin/uv"
+printf '#!/bin/sh\necho "2.1.400 (Claude Code)"\n' > "$T/bin/claude"; chmod +x "$T/bin/uv" "$T/bin/claude"
+e2e() { PATH="$T/bin:$PATH" "$@" >/dev/null 2>&1; }
+rm -f -- "$HOME/.zshrc"
+e2e "$repo/install.sh" --profile "$HOME/fresh"
+check "e2e: install creates profile"   '[ "$(<$HOME/fresh/.claude-copilot-router)" = created ] && grep -q apiKeyHelper $HOME/fresh/settings.json'
+print yes | e2e "$repo/uninstall.sh"
+check "e2e: uninstall removes it all"  '[ ! -e $HOME/fresh ] && [ ! -e "$conf" ] && ! grep -q claude-copilot-router $HOME/.zshrc'
+mkdir -p "$HOME/w"; echo '{}' > "$HOME/w/.claude.json"
+print -r -- '{"apiKeyHelper":"/x","env":{"ANTHROPIC_MODEL":"o",}}' > "$HOME/w/settings.json"
+e2e "$repo/install.sh" --profile "$HOME/w" --adopt
+check "e2e: bad JSON stops before marker" '[ ! -e "$HOME/w/.claude-copilot-router" ] && grep -q "\"o\",}" "$HOME/w/settings.json"'
+print -r -- '{"apiKeyHelper":"/x","env":{"ANTHROPIC_MODEL":"o"}}' > "$HOME/w/settings.json"
+e2e "$repo/install.sh" --profile "$HOME/w" --adopt
+check "e2e: adopt kits the profile"    '[ "$(<$HOME/w/.claude-copilot-router)" = adopted ] && grep -q 127.0.0.1 "$HOME/w/settings.json"'
+print yes | e2e "$repo/uninstall.sh"
+check "e2e: adopted settings restored" 'python3 -I -c "import json,sys; sys.exit(json.load(open(sys.argv[1])) != {\"apiKeyHelper\": \"/x\", \"env\": {\"ANTHROPIC_MODEL\": \"o\"}})" "$HOME/w/settings.json" && [ ! -e "$HOME/w/.claude-copilot-router" ] && [ -f "$HOME/w/.claude.json" ]'
+print -r -- '{"theme":"d"}' > "$HOME/.claude/settings.json"
+e2e "$repo/install.sh" --profile "$HOME/p3"
+ln -s "$HOME/.claude/settings.json" "$HOME/p3/s.tmp"; mv "$HOME/p3/s.tmp" "$HOME/p3/settings.json"
+e2e "$repo/install.sh" --profile "$HOME/p3" --sonnet claude-other
+check "e2e: never writes through a settings link" '[ "$(<$HOME/.claude/settings.json)" = "{\"theme\":\"d\"}" ]'
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -91,7 +91,7 @@ on the next run. (All router state lives under `$XDG_CONFIG_HOME/claude-copilot-
 | Flag | Default | |
 |---|---|---|
 | `--port N` | `4141` | 4000 is refused: LiteLLM silently moves to a random port when 4000 is busy |
-| `--profile DIR` | `~/.claude-copilot` | a directory under `$HOME` (letters, digits, `._/@+-`; relative paths and symlinks are resolved). Never `~/.claude`, `~/.config` or anything inside them. To move it later, run `./uninstall.sh` first |
+| `--profile DIR` | `~/.claude-copilot` | a directory under `$HOME` (letters, digits, `._/@+-`; relative paths and symlinks are resolved). Never `~/.claude`, `~/.config`, anything inside them, or the `CLAUDE_CONFIG_DIR` of the shell you run it from. To move it later, run `./uninstall.sh` first |
 | `--alias NAME` | `claude-copilot` | shell alias that starts Claude Code with this profile (not `claude`) |
 | `--sonnet` / `--opus` / `--haiku ID` | `claude-*-5.5` | Copilot model ids from `./models.sh` |
 | `--main sonnet\|opus\|haiku` | `sonnet` | model Claude Code starts on |
@@ -102,8 +102,9 @@ on the next run. (All router state lives under `$XDG_CONFIG_HOME/claude-copilot-
 
 Re-running `./install.sh` is safe: it rewrites only the keys it owns in the profile's
 `settings.json` (`apiKeyHelper` and its `env` entries) and keeps everything else, including hooks.
-The first run saves what those keys held, for uninstall to restore. A symlinked `settings.json`
-stays a symlink. If `settings.json` is not valid JSON, the installer stops and leaves it alone.
+The first run saves what those keys held, for uninstall to restore. If the profile's
+`settings.json` is a symlink or not valid JSON, the installer stops and leaves it alone: it never
+writes through a link, so it cannot change the file a link points at (say `~/.claude/settings.json`).
 
 ## Your normal Claude Code setup and this one
 

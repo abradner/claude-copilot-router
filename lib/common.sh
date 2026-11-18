@@ -65,26 +65,34 @@ ccr_validate() {
 ccr_validate_profile() {
   local hint="$(ccr_conf_hint)"
   [[ $CCR_PROFILE =~ '^/[A-Za-z0-9._/@+-]+$' ]] || die "profile must be a path of letters, digits and ._/@+- only: $CCR_PROFILE$hint"
-  ccr_safe_profile "$CCR_PROFILE" || die "refusing profile path $CCR_PROFILE$hint"
-  ccr_safe_home || die "refusing router home $CCR_HOME: it must be a directory named claude-copilot-router below \$HOME (check XDG_CONFIG_HOME)"
+  ccr_safe_profile "$CCR_PROFILE" || die "refusing profile path $CCR_PROFILE: $CCR_WHY$hint"
+  ccr_safe_home || die "refusing router home $CCR_HOME: $CCR_WHY"
 }
 
 # The router's own state dir, which uninstall rm -rf's.
 ccr_safe_home() {
-  [[ $CCR_HOME == "$HOME"/?* && ${CCR_HOME:t} == claude-copilot-router && $CCR_HOME == ${CCR_HOME:A} ]]
+  CCR_WHY="it must be a real directory named claude-copilot-router below \$HOME (check XDG_CONFIG_HOME)"
+  [[ $CCR_HOME == "$HOME"/?* && ${CCR_HOME:t} == claude-copilot-router && $CCR_HOME == ${CCR_HOME:A} ]] || return 1
+  # never this repo's own checkout, e.g. cloned to ~/.config/claude-copilot-router
+  CCR_WHY="it is (or contains) a git checkout, perhaps of this repo; clone the repo somewhere else"
+  [[ ! -e $CCR_HOME/.git && ${CCR_LIB:h} != "$CCR_HOME" && ${CCR_LIB:h} != "$CCR_HOME"/* ]]
 }
 
 # A profile path we are willing to create, and later rm -rf (with the marker present).
 # Compared canonically, so a symlink to ~/.claude (or anything else listed) is refused too.
+# On refusal CCR_WHY says why.
 ccr_safe_profile() {
   local p="${1:A}" x
+  CCR_WHY="it must be a directory below \$HOME"
   [[ $p == "$HOME"/?* ]] || return 1
   # never HOME's main Claude Code profile, ~/.config, the router home, or an XDG config dir
   for x in "$HOME/.claude" "$HOME/.config" "$CCR_HOME" ${XDG_CONFIG_HOME:+"$XDG_CONFIG_HOME"}; do
     x="${x:A}"
+    CCR_WHY="it is, contains or is inside $x"
     [[ $p == "$x" || $p == "$x"/* || $x == "$p"/* ]] && return 1
   done
   # nor the profile in use right now, unless it is this router's own profile
+  CCR_WHY="it is the active CLAUDE_CONFIG_DIR of this shell; run from a shell without it"
   if [[ -n ${CLAUDE_CONFIG_DIR:-} && $p == ${CLAUDE_CONFIG_DIR:A} && ! -f $p/$CCR_MARK ]]; then
     return 1
   fi
@@ -161,6 +169,7 @@ ccr_link_from() {  # ccr_link_from SRC [--no-hooks]
   [ "${src:A}" != "${CCR_PROFILE:A}" ] || die "--link-from cannot be the router profile itself"
   ccr_link_one "$src" skills
   ccr_link_one "$src" CLAUDE.md
+  [ ! -L "$CCR_PROFILE/.ccr-linked-from" ] || die "$CCR_PROFILE/.ccr-linked-from is a symlink; remove it"
   print -r -- "$src" > "$CCR_PROFILE/.ccr-linked-from"
   if [ "${2:-}" != --no-hooks ] && [ -f "$src/settings.json" ]; then
     "$(ccr_merge_python)" -I "$CCR_LIB/settings_merge.py" share "$src/settings.json" "$CCR_PROFILE/settings.json" "$CCR_PROFILE/.ccr-shared-keys.json"

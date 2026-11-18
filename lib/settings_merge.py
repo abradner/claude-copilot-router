@@ -5,8 +5,13 @@ the proxy key is referenced by path only (apiKeyHelper reads it at run time).
                                                     set the router-owned keys in the profile's
                                                     settings.json, keep everything else; the
                                                     first run saves what those keys held in STATE
-  unkit   DEST STATE                                remove the router-owned keys, restoring
-                                                    what STATE saved
+  unkit   DEST STATE KEYPATH                        remove the router-owned keys, restoring
+                                                    what STATE saved (without STATE, remove only
+                                                    values that are recognisably the router's)
+  check   DEST                                      exit non-zero unless kit could write DEST
+
+Files the router writes are never symlinks: it refuses rather than write through a link, so a
+profile's settings.json linked to ~/.claude/settings.json can never change the main profile.
   config  DEST SONNET OPUS HAIKU                    write the LiteLLM proxy config.yaml
   share   SRC DEST STATE                            copy hooks/statusLine/outputStyle from SRC
                                                     (SRC is only read, never modified)
@@ -49,10 +54,16 @@ def load(path):
         sys.exit(f"error: {path} is not valid JSON ({e}); fix it first (left untouched)")
 
 
+def no_link(*paths):
+    for path in paths:
+        if os.path.islink(path):
+            sys.exit(f"error: {path} is a symlink; the router never writes through links. "
+                     "Replace it with a copy of the file, then rerun.")
+
+
 def write_atomic(path, text):
-    """Replace path's contents atomically. A symlink is kept (its target is written) and an
-    existing file keeps its mode; new files are 0600."""
-    path = os.path.realpath(path)
+    """Replace path's contents atomically; an existing file keeps its mode, new files are 0600."""
+    no_link(path)
     mode = os.stat(path).st_mode & 0o777 if os.path.exists(path) else 0o600
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".ccr.")
     with os.fdopen(fd, "w") as f:
@@ -65,8 +76,24 @@ def save(path, data):
     write_atomic(path, json.dumps(data, indent=2) + "\n")
 
 
+def load_state(state):
+    st = load(state)
+    prev = st.get("prev", {})
+    if not (isinstance(prev, dict) and isinstance(prev.get("env", {}), dict)
+            and isinstance(st.get("shared", []), list)):
+        sys.exit(f"error: {state} is not in the expected shape; fix or delete it (left untouched)")
+    return st
+
+
+def check(dest):
+    no_link(dest)
+    load(dest)
+
+
 def kit(dest, state, keypath, url, sonnet, opus, haiku, main):
     models = {"sonnet": cc_name(sonnet), "opus": cc_name(opus), "haiku": cc_name(haiku)}
+    no_link(dest, state)
+    existed = os.path.exists(dest)
     s = load(dest)
     helper = f"/bin/cat {shlex.quote(keypath)}"
     ours = {
@@ -88,28 +115,52 @@ def kit(dest, state, keypath, url, sonnet, opus, haiku, main):
                         if k in env and not (kitted and env[k] == ours[k])}}
         if "apiKeyHelper" in s and not kitted:
             prev["apiKeyHelper"] = s["apiKeyHelper"]
-        save(state, {"prev": prev})
+        save(state, {"prev": prev, "existed": existed})
     s["apiKeyHelper"] = helper
     env.update(ours)
     s["env"] = env
     save(dest, s)
 
 
-def unkit(dest, state):
-    prev = load(state).get("prev", {})
+def unkit(dest, state, keypath):
+    no_link(dest, state)
+    if not os.path.exists(dest):
+        if os.path.exists(state):
+            os.remove(state)
+        return
     s = load(dest)
-    s.pop("apiKeyHelper", None)
-    if "apiKeyHelper" in prev:
-        s["apiKeyHelper"] = prev["apiKeyHelper"]
     env = s.get("env") if isinstance(s.get("env"), dict) else {}
-    for k in ROUTER_ENV:
-        env.pop(k, None)
-    env.update(prev.get("env", {}))
+    if os.path.exists(state):
+        st = load_state(state)
+        prev = st["prev"] if "prev" in st else {}
+        s.pop("apiKeyHelper", None)
+        if "apiKeyHelper" in prev:
+            s["apiKeyHelper"] = prev["apiKeyHelper"]
+        for k in ROUTER_ENV:
+            env.pop(k, None)
+        env.update(prev.get("env", {}))
+        existed = st.get("existed", True)
+    else:
+        # No record of what was there before: take out only what is recognisably the router's.
+        if s.get("apiKeyHelper") == f"/bin/cat {shlex.quote(keypath)}":
+            s.pop("apiKeyHelper")
+        if str(env.get("ANTHROPIC_BASE_URL", "")).startswith("http://127.0.0.1:"):
+            env.pop("ANTHROPIC_BASE_URL")
+        for k in BLANKED:
+            if env.get(k) == "":
+                env.pop(k)
+        left = [k for k in ROUTER_ENV if k in env]
+        if left:
+            print(f"note: {dest}: no saved state, so these were kept; check them: {', '.join(left)}")
+        existed = True
     if env:
         s["env"] = env
     else:
         s.pop("env", None)
-    save(dest, s)
+    if not s and not existed:
+        os.remove(dest)
+    else:
+        save(dest, s)
     if os.path.exists(state):
         os.remove(state)
 
@@ -129,9 +180,10 @@ def config(dest, sonnet, opus, haiku):
 
 
 def share(src, dest, state):
+    no_link(dest, state)
     sv = load(src)
     s = load(dest)
-    st = load(state)
+    st = load_state(state)
     prev = st.get("prev", {})          # values the profile had before the first share
     added = [k for k in SHARE_KEYS if k in sv]
     for k in added:
@@ -154,7 +206,8 @@ def share(src, dest, state):
 
 
 def unshare(dest, state):
-    st = load(state)
+    no_link(dest, state)
+    st = load_state(state)
     s = load(dest)
     prev = st.get("prev", {})
     for k in st.get("shared", []):
@@ -168,7 +221,7 @@ def unshare(dest, state):
         os.remove(state)
 
 
-COMMANDS = {"kit": kit, "unkit": unkit, "config": config, "share": share, "unshare": unshare}
+COMMANDS = {"kit": kit, "unkit": unkit, "check": check, "config": config, "share": share, "unshare": unshare}
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:

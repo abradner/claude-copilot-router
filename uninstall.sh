@@ -2,22 +2,25 @@
 # Removes the router (venv, tokens, key, config), its Claude Code profile and the alias.
 # An --adopt'ed profile is kept: only the router's keys, links and marker are removed from it,
 # and the settings the router replaced are put back.
-# Asks first. Never follows links out of the profile (shared skills/CLAUDE.md stay intact).
+# Asks first. Never follows links out of the profile (shared skills/CLAUDE.md stay intact), and
+# never writes through a symlinked settings.json.
 set -eu
 here="${0:A:h}"; source "$here/lib/common.sh"; ccr_load_conf
 # Only the paths matter here: a stale port or model in router.conf must not block uninstall.
-[ ! -L "${CCR_PROFILE%/}" ] || die "$CCR_PROFILE is a symlink; remove the link by hand, then rerun"
+[ ! -L "${CCR_PROFILE:a}" ] || die "$CCR_PROFILE is a symlink; remove the link by hand, then rerun"
 CCR_PROFILE="${CCR_PROFILE:A}"
 ccr_validate_profile
 
 mark="" profile_action=skip why="no $CCR_MARK marker, so it was not created by this tool"
-if [ -e "$CCR_PROFILE/$CCR_MARK" ]; then
+if [ -e "$CCR_PROFILE/$CCR_MARK" ] || [ -L "$CCR_PROFILE/$CCR_MARK" ]; then
   if [ -f "$CCR_PROFILE/$CCR_MARK" ] && [ ! -L "$CCR_PROFILE/$CCR_MARK" ]; then
     mark="$(<"$CCR_PROFILE/$CCR_MARK")"
   fi
   case $mark in
     created) profile_action=delete ;;
-    adopted) profile_action=clean; py="$(ccr_merge_python)" ;;
+    adopted) profile_action=clean; py="$(ccr_merge_python)"
+      # stop before the prompt, not halfway, if settings.json cannot be edited safely
+      "$py" -I "$CCR_LIB/settings_merge.py" check "$CCR_PROFILE/settings.json" ;;
     *) why="its $CCR_MARK marker holds '$mark', not created or adopted; inspect it and remove it by hand" ;;
   esac
 fi
@@ -36,7 +39,7 @@ case $profile_action in
   delete) rm -rf -- "$CCR_PROFILE" ;;
   clean)
     ccr_unlink
-    "$py" -I "$CCR_LIB/settings_merge.py" unkit "$CCR_PROFILE/settings.json" "$CCR_PROFILE/.ccr-kit-prev.json"
+    "$py" -I "$CCR_LIB/settings_merge.py" unkit "$CCR_PROFILE/settings.json" "$CCR_PROFILE/.ccr-kit-prev.json" "$CCR_KEY"
     rm -f -- "$CCR_PROFILE/$CCR_MARK" ;;
   skip) echo "skipped $CCR_PROFILE: $why" ;;
 esac

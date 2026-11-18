@@ -38,13 +38,13 @@ done
 CCR_PROFILE="${CCR_PROFILE:A}"   # relative paths resolve against the current directory
 ccr_validate
 old_profile="${old_profile:A}"
-if [ "$old_profile" != "$CCR_PROFILE" ] && [ -e "$old_profile/$CCR_MARK" ]; then
+if [ "$old_profile" != "$CCR_PROFILE" ] && { [ -e "$old_profile/$CCR_MARK" ] || [ -L "$old_profile/$CCR_MARK" ]; }; then
   die "the profile is moving from $old_profile; run ./uninstall.sh first, then install with the new --profile"
 fi
 # The marker says what uninstall may do: "created" (delete the profile) or "adopted" (keep it).
 # An existing marker is never changed; anything else in it stops here.
 mark=""
-if [ -e "$CCR_PROFILE/$CCR_MARK" ]; then
+if [ -e "$CCR_PROFILE/$CCR_MARK" ] || [ -L "$CCR_PROFILE/$CCR_MARK" ]; then
   [ -f "$CCR_PROFILE/$CCR_MARK" ] && [ ! -L "$CCR_PROFILE/$CCR_MARK" ] \
     || die "$CCR_PROFILE/$CCR_MARK is not a regular file; inspect it and remove it by hand"
   mark="$(<"$CCR_PROFILE/$CCR_MARK")"
@@ -93,7 +93,14 @@ chmod 600 "$CCR_HDR"
 echo "==> proxy config and profile $CCR_PROFILE"
 "$py" -I "$CCR_LIB/settings_merge.py" config "$CCR_HOME/config.yaml" "$CCR_SONNET" "$CCR_OPUS" "$CCR_HAIKU"
 mkdir -p "$CCR_PROFILE"
-[ -n "$mark" ] || print -r -- "$new_mark" > "$CCR_PROFILE/$CCR_MARK"
+# Refuse a symlinked or invalid settings.json before the marker exists, so an aborted
+# install never leaves a marker without the state uninstall needs.
+"$py" -I "$CCR_LIB/settings_merge.py" check "$CCR_PROFILE/settings.json"
+if [ -z "$mark" ]; then
+  # a fresh marker: drop any state left from an earlier, half-removed install
+  rm -f -- "$CCR_PROFILE/.ccr-kit-prev.json" "$CCR_PROFILE/.ccr-shared-keys.json" "$CCR_PROFILE/.ccr-linked-from"
+  print -r -- "$new_mark" > "$CCR_PROFILE/$CCR_MARK"
+fi
 "$py" -I "$CCR_LIB/settings_merge.py" kit "$CCR_PROFILE/settings.json" "$CCR_PROFILE/.ccr-kit-prev.json" "$CCR_KEY" \
   "http://127.0.0.1:$CCR_PORT" "$CCR_SONNET" "$CCR_OPUS" "$CCR_HAIKU" "$CCR_MAIN"
 ccr_write_alias
