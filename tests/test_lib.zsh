@@ -5,6 +5,17 @@ set -u
 repo="${0:A:h:h}"
 T="$(mktemp -d "${TMPDIR:-/tmp}/ccr-test.XXXXXX")"
 [[ $T == */ccr-test.* ]] && trap 'rm -rf -- "$T"' EXIT
+# Hermetic: find the real python3 while the real HOME is still set (a mise/asdf/pyenv shim
+# needs it), then run everything on a minimal PATH with that interpreter and stub uv/claude.
+realpy="$(python3 -I -c 'import sys; print(sys.executable)' 2>/dev/null)"
+[[ -x $realpy ]] || { echo "python3 not found"; exit 1; }
+mkdir -p "$T/bin"; ln -s "$realpy" "$T/bin/python3"
+print -r -- '#!/bin/zsh -f
+[ "$1" = venv ] && { mkdir -p "$4/bin"; ln -s "$(command -v python3)" "$4/bin/python"; }
+exit 0' > "$T/bin/uv"
+printf '#!/bin/sh\necho "2.1.400 (Claude Code)"\n' > "$T/bin/claude"; chmod +x "$T/bin/uv" "$T/bin/claude"
+export PATH="$T/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+unset -m 'MISE_*' 'ASDF_*' 'PYENV*' 'VIRTUAL_ENV' 'PYTHON*' 'UV_*' 'CLAUDE_CONFIG_DIR'
 export HOME="${T:A}/home"; mkdir -p "$HOME"   # canonical, as common.sh makes it
 unset XDG_CONFIG_HOME
 pass=0; fail=0
@@ -162,13 +173,8 @@ mkdir -p "$conf/.git"
 check "router home with .git refused"  '! lib ccr_validate'
 rm -rf -- "$conf"
 
-# Whole install/uninstall runs, with stub uv and claude (no network, nothing installed).
-mkdir -p "$T/bin"
-print -r -- '#!/bin/zsh -f
-[ "$1" = venv ] && { mkdir -p "$4/bin"; ln -s "$(command -v python3)" "$4/bin/python"; }
-exit 0' > "$T/bin/uv"
-printf '#!/bin/sh\necho "2.1.400 (Claude Code)"\n' > "$T/bin/claude"; chmod +x "$T/bin/uv" "$T/bin/claude"
-e2e() { PATH="$T/bin:$PATH" "$@" >/dev/null 2>&1; }
+# Whole install/uninstall runs, with the stub uv and claude (no network, nothing installed).
+e2e() { "$@" >/dev/null 2>&1; }
 rm -f -- "$HOME/.zshrc"
 e2e "$repo/install.sh" --profile "$HOME/fresh"
 check "e2e: install creates profile"   '[ "$(<$HOME/fresh/.claude-copilot-router)" = created ] && grep -q apiKeyHelper $HOME/fresh/settings.json'
