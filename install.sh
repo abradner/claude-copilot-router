@@ -1,0 +1,99 @@
+#!/bin/zsh -f
+# Install or upgrade claude-copilot-router. Idempotent: re-run with new flags to change settings.
+#
+#   ./install.sh [--port N] [--profile DIR] [--alias NAME]
+#                [--sonnet ID] [--opus ID] [--haiku ID] [--main sonnet|opus|haiku]
+#                [--link-from DIR [--no-hooks]] [--unlink] [--adopt]
+#
+# Model ids are Copilot ids (see ./models.sh), e.g. claude-sonnet-5.5.
+# --link-from ~/.claude shares an existing Claude Code setup: links skills/ and CLAUDE.md,
+# copies hooks, statusLine and outputStyle. --unlink undoes exactly that.
+# --adopt uses an existing Claude Code profile directory as --profile; uninstall then removes only
+# the router's keys, links and marker from it and leaves the directory.
+# No GitHub sign-in happens here: run ./login.sh next.
+set -eu
+here="${0:A:h}"; source "$here/lib/common.sh"
+ccr_load_conf
+old_profile="$CCR_PROFILE"
+
+link_from="" no_hooks="" unlink="" adopt=""
+while (( $# )); do
+  case $1 in
+    --port) CCR_PORT="${2:?}"; shift ;;
+    --profile) CCR_PROFILE="${2:?}"; shift ;;
+    --alias) CCR_ALIAS="${2:?}"; shift ;;
+    --sonnet) CCR_SONNET="${2:?}"; shift ;;
+    --opus) CCR_OPUS="${2:?}"; shift ;;
+    --haiku) CCR_HAIKU="${2:?}"; shift ;;
+    --main) CCR_MAIN="${2:?}"; shift ;;
+    --link-from) link_from="${2:?}"; shift ;;
+    --no-hooks) no_hooks=--no-hooks ;;
+    --unlink) unlink=1 ;;
+    --adopt) adopt=1 ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    *) die "unknown option: $1 (see --help)" ;;
+  esac
+  shift
+done
+CCR_PROFILE="${CCR_PROFILE:A}"
+ccr_validate
+old_profile="${old_profile:A}"
+if [ "$old_profile" != "$CCR_PROFILE" ] && [ -f "$old_profile/$CCR_MARK" ]; then
+  die "the profile is moving from $old_profile; run ./uninstall.sh first (or ./install.sh --unlink, then delete or keep $old_profile yourself), then install with the new --profile"
+fi
+mark=created
+if [ -d "$CCR_PROFILE" ] && [ ! -f "$CCR_PROFILE/$CCR_MARK" ] && [ -n "$(ls -A "$CCR_PROFILE")" ]; then
+  [ -n "$adopt" ] || die "$CCR_PROFILE exists and was not created by this tool; pick another --profile, or pass --adopt"
+  [ -f "$CCR_PROFILE/settings.json" ] || [ -f "$CCR_PROFILE/.claude.json" ] \
+    || die "--adopt: $CCR_PROFILE does not look like a Claude Code profile (no settings.json or .claude.json)"
+  mark=adopted
+elif [ -f "$CCR_PROFILE/$CCR_MARK" ]; then
+  mark="$(<"$CCR_PROFILE/$CCR_MARK")"; [ "$mark" = adopted ] || mark=created
+fi
+
+[ "$(uname)" = Darwin ] || die "macOS only for now"
+[ "$(uname -m)" = arm64 ] || die "Apple Silicon only (the locked cryptography wheel is arm64-only on macOS)"
+command -v claude >/dev/null || die "Claude Code not on PATH"
+ccv="$(claude --version 2>/dev/null | sed -n 's/^\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
+if [ -n "$ccv" ]; then
+  autoload -Uz is-at-least
+  is-at-least 2.1.304 "$ccv" || echo "warning: Claude Code $ccv is older than 2.1.304; run 'claude update' (older versions don't retry rejected request features)" >&2
+fi
+command -v uv >/dev/null || die "uv missing: brew install uv"
+[ -s "$here/requirements.lock" ] || die "requirements.lock missing"
+
+mkdir -p "$CCR_HOME" "$CCR_TOKENS"
+chmod 700 "$CCR_HOME" "$CCR_TOKENS"
+ccr_save_conf
+
+echo "==> LiteLLM (hash-locked, wheels only) into $CCR_VENV"
+[ -x "$CCR_VENV/bin/python" ] || uv venv --python 3.12 "$CCR_VENV"
+uv pip sync --python "$CCR_VENV/bin/python" --require-hashes --only-binary :all: "$here/requirements.lock"
+py="$CCR_VENV/bin/python"
+
+if [ ! -s "$CCR_KEY" ]; then
+  k="$(openssl rand -hex 32)"
+  [[ $k =~ '^[0-9a-f]{64}$' ]] || die "openssl rand failed"
+  printf 'sk-%s' "$k" > "$CCR_KEY"; unset k
+fi
+chmod 600 "$CCR_KEY"
+ccr_key_ok
+key="$(<"$CCR_KEY")"
+printf 'x-api-key: %s\n' "$key" > "$CCR_HDR"; unset key
+chmod 600 "$CCR_HDR"
+
+echo "==> proxy config and profile $CCR_PROFILE"
+"$py" -I "$CCR_LIB/settings_merge.py" config "$CCR_HOME/config.yaml" "$CCR_SONNET" "$CCR_OPUS" "$CCR_HAIKU"
+mkdir -p "$CCR_PROFILE"
+print -r -- "$mark" > "$CCR_PROFILE/$CCR_MARK"
+"$py" -I "$CCR_LIB/settings_merge.py" kit "$CCR_PROFILE/settings.json" "$CCR_KEY" \
+  "http://127.0.0.1:$CCR_PORT" "$CCR_SONNET" "$CCR_OPUS" "$CCR_HAIKU" "$CCR_MAIN"
+ccr_write_alias
+
+[ -n "$unlink" ] && ccr_unlink
+[ -n "$link_from" ] && ccr_link_from "${link_from:A}" $no_hooks
+
+echo
+echo "Done. Alias '$CCR_ALIAS' added to ~/.zshrc (open a new shell or: exec zsh)."
+echo "Next: ./login.sh, ./models.sh, ./run.sh, then ./smoke.sh in another terminal."
+echo "Optional: keep tokens out of Time Machine: tmutil addexclusion \"$CCR_HOME\""

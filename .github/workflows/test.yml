@@ -1,0 +1,32 @@
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: zsh syntax
+        run: for f in *.sh lib/common.sh tests/*.zsh; do zsh -n "$f"; done
+      - name: settings merge unit tests
+        run: python3 -I tests/test_settings_merge.py -v
+      - name: lib and installer checks
+        run: zsh -f tests/test_lib.zsh
+      - name: lock file is fully hashed
+        run: |
+          python3 - <<'PY'
+          import re
+          text = open("requirements.lock").read()
+          pkgs = re.findall(r"^([A-Za-z0-9_.-]+)==", text, re.M)
+          blocks = re.split(r"^(?=[A-Za-z0-9_.-]+==)", text, flags=re.M)
+          unhashed = [b.split("==")[0] for b in blocks if "==" in b and "--hash=sha256:" not in b]
+          assert pkgs and not unhashed, f"unhashed: {unhashed}"
+          print(f"{len(pkgs)} packages, all hashed")
+          PY
