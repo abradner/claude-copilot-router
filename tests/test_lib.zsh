@@ -175,6 +175,7 @@ rm -rf -- "$conf"
 
 # Whole install/uninstall runs, with the stub uv and claude (no network, nothing installed).
 e2e() { "$@" >/dev/null 2>&1; }
+e2eout() { out="$("$@" 2>&1)"; rc=$?; }   # sets $out and $rc
 rm -f -- "$HOME/.zshrc"
 e2e "$repo/install.sh" --profile "$HOME/fresh"
 check "e2e: install creates profile"   '[ "$(<$HOME/fresh/.claude-copilot-router)" = created ] && grep -q apiKeyHelper $HOME/fresh/settings.json'
@@ -182,18 +183,36 @@ print yes | e2e "$repo/uninstall.sh"
 check "e2e: uninstall removes it all"  '[ ! -e $HOME/fresh ] && [ ! -e "$conf" ] && ! grep -q claude-copilot-router $HOME/.zshrc'
 mkdir -p "$HOME/w"; echo '{}' > "$HOME/w/.claude.json"
 print -r -- '{"apiKeyHelper":"/x","env":{"ANTHROPIC_MODEL":"o",}}' > "$HOME/w/settings.json"
-e2e "$repo/install.sh" --profile "$HOME/w" --adopt
-check "e2e: bad JSON stops before marker" '[ ! -e "$HOME/w/.claude-copilot-router" ] && grep -q "\"o\",}" "$HOME/w/settings.json"'
+e2eout "$repo/install.sh" --profile "$HOME/w" --adopt
+check "e2e: bad JSON stops before marker" '[ $rc -ne 0 ] && [[ $out == *"not valid JSON"* ]] && [ ! -e "$HOME/w/.claude-copilot-router" ] && [ ! -e "$conf/router.conf" ] && grep -q "\"o\",}" "$HOME/w/settings.json"'
 print -r -- '{"apiKeyHelper":"/x","env":{"ANTHROPIC_MODEL":"o"}}' > "$HOME/w/settings.json"
 e2e "$repo/install.sh" --profile "$HOME/w" --adopt
 check "e2e: adopt kits the profile"    '[ "$(<$HOME/w/.claude-copilot-router)" = adopted ] && grep -q 127.0.0.1 "$HOME/w/settings.json"'
+check "e2e: adopt saved state"         '[ -f "$HOME/w/.ccr-kit-prev.json" ]'
 print yes | e2e "$repo/uninstall.sh"
 check "e2e: adopted settings restored" 'python3 -I -c "import json,sys; sys.exit(json.load(open(sys.argv[1])) != {\"apiKeyHelper\": \"/x\", \"env\": {\"ANTHROPIC_MODEL\": \"o\"}})" "$HOME/w/settings.json" && [ ! -e "$HOME/w/.claude-copilot-router" ] && [ -f "$HOME/w/.claude.json" ]'
 print -r -- '{"theme":"d"}' > "$HOME/.claude/settings.json"
 e2e "$repo/install.sh" --profile "$HOME/p3"
+check "e2e: p3 installed"              '[ "$(<$HOME/p3/.claude-copilot-router)" = created ]'
 ln -s "$HOME/.claude/settings.json" "$HOME/p3/s.tmp"; mv "$HOME/p3/s.tmp" "$HOME/p3/settings.json"
-e2e "$repo/install.sh" --profile "$HOME/p3" --sonnet claude-other
+e2eout "$repo/install.sh" --profile "$HOME/p3" --sonnet claude-other
+check "e2e: settings link refused"     '[ $rc -ne 0 ] && [[ $out == *"is a symlink"* ]] && [ -L "$HOME/p3/settings.json" ]'
 check "e2e: never writes through a settings link" '[ "$(<$HOME/.claude/settings.json)" = "{\"theme\":\"d\"}" ]'
+check "e2e: refused rerun changes no config" '! grep -q claude-other "$conf/router.conf" "$conf/config.yaml"'
+rm -f -- "$HOME/p3/settings.json"
+rm -f -- "$conf/hdr"; echo victim > "$HOME/victim"; ln -s "$HOME/victim" "$conf/hdr"
+e2eout "$repo/install.sh" --profile "$HOME/p3"
+check "e2e: router-home link refused"  '[ $rc -ne 0 ] && [[ $out == *"is a symlink"* ]] && [ "$(<$HOME/victim)" = victim ]'
+rm -f -- "$conf/hdr" "$HOME/victim"
+print yes | e2e "$repo/uninstall.sh"
+
+# an adopted uninstall interrupted after unkit keeps the saved values for the rerun
+mkdir -p "$HOME/w2"; echo '{}' > "$HOME/w2/.claude.json"
+print -r -- '{"apiKeyHelper":"/mine","env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:8080","ANTHROPIC_AUTH_TOKEN":""}}' > "$HOME/w2/settings.json"
+e2e "$repo/install.sh" --profile "$HOME/w2" --adopt
+python3 -I "$repo/lib/settings_merge.py" unkit "$HOME/w2/settings.json" "$HOME/w2/.ccr-kit-prev.json" "$conf/master-key" http://127.0.0.1:4141
+print yes | e2e "$repo/uninstall.sh"
+check "e2e: interrupted uninstall rerun is lossless" 'python3 -I -c "import json,sys; sys.exit(json.load(open(sys.argv[1])) != {\"apiKeyHelper\": \"/mine\", \"env\": {\"ANTHROPIC_BASE_URL\": \"http://127.0.0.1:8080\", \"ANTHROPIC_AUTH_TOKEN\": \"\"}})" "$HOME/w2/settings.json" && [ ! -e "$HOME/w2/.ccr-kit-prev.json" ]'
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

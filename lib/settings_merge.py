@@ -5,10 +5,12 @@ the proxy key is referenced by path only (apiKeyHelper reads it at run time).
                                                     set the router-owned keys in the profile's
                                                     settings.json, keep everything else; the
                                                     first run saves what those keys held in STATE
-  unkit   DEST STATE KEYPATH                        remove the router-owned keys, restoring
+  unkit   DEST STATE KEYPATH URL                    remove the router-owned keys, restoring
                                                     what STATE saved (without STATE, remove only
-                                                    values that are recognisably the router's)
-  check   DEST                                      exit non-zero unless kit could write DEST
+                                                    values that are recognisably the router's).
+                                                    STATE is kept: the caller deletes it last
+  check   DEST [STATE...]                           exit non-zero unless DEST (and STATE files)
+                                                    can be read and written safely
 
 Files the router writes are never symlinks: it refuses rather than write through a link, so a
 profile's settings.json linked to ~/.claude/settings.json can never change the main profile.
@@ -79,15 +81,21 @@ def save(path, data):
 def load_state(state):
     st = load(state)
     prev = st.get("prev", {})
-    if not (isinstance(prev, dict) and isinstance(prev.get("env", {}), dict)
-            and isinstance(st.get("shared", []), list)):
+    env = prev.get("env", {}) if isinstance(prev, dict) else None
+    shared = st.get("shared", [])
+    if not (isinstance(prev, dict) and isinstance(env, dict)
+            and all(isinstance(v, str) for v in env.values())
+            and isinstance(prev.get("apiKeyHelper", ""), (str, type(None)))
+            and isinstance(shared, list) and all(isinstance(k, str) for k in shared)):
         sys.exit(f"error: {state} is not in the expected shape; fix or delete it (left untouched)")
     return st
 
 
-def check(dest):
-    no_link(dest)
+def check(dest, *states):
+    no_link(dest, *states)
     load(dest)
+    for state in states:
+        load_state(state)
 
 
 def kit(dest, state, keypath, url, sonnet, opus, haiku, main):
@@ -122,11 +130,9 @@ def kit(dest, state, keypath, url, sonnet, opus, haiku, main):
     save(dest, s)
 
 
-def unkit(dest, state, keypath):
+def unkit(dest, state, keypath, url):
     no_link(dest, state)
     if not os.path.exists(dest):
-        if os.path.exists(state):
-            os.remove(state)
         return
     s = load(dest)
     env = s.get("env") if isinstance(s.get("env"), dict) else {}
@@ -141,14 +147,15 @@ def unkit(dest, state, keypath):
         env.update(prev.get("env", {}))
         existed = st.get("existed", True)
     else:
-        # No record of what was there before: take out only what is recognisably the router's.
+        # No record of what was there before: take out only what is recognisably the router's,
+        # and only when the router's own key helper shows it was kitted at all.
         if s.get("apiKeyHelper") == f"/bin/cat {shlex.quote(keypath)}":
             s.pop("apiKeyHelper")
-        if str(env.get("ANTHROPIC_BASE_URL", "")).startswith("http://127.0.0.1:"):
-            env.pop("ANTHROPIC_BASE_URL")
-        for k in BLANKED:
-            if env.get(k) == "":
-                env.pop(k)
+            if env.get("ANTHROPIC_BASE_URL") == url:
+                env.pop("ANTHROPIC_BASE_URL")
+            for k in BLANKED:
+                if env.get(k) == "":
+                    env.pop(k)
         left = [k for k in ROUTER_ENV if k in env]
         if left:
             print(f"note: {dest}: no saved state, so these were kept; check them: {', '.join(left)}")
@@ -161,8 +168,6 @@ def unkit(dest, state, keypath):
         os.remove(dest)
     else:
         save(dest, s)
-    if os.path.exists(state):
-        os.remove(state)
 
 
 def config(dest, sonnet, opus, haiku):

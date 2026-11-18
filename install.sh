@@ -59,6 +59,11 @@ else
   new_mark=created
 fi
 
+# Check everything that will be written before writing anything, so a refusal changes nothing.
+ccr_no_links "$CCR_HOME" "$CCR_TOKENS" "$CCR_CONF" "$CCR_KEY" "$CCR_HDR" "$CCR_HOME/config.yaml" "$CCR_VENV"
+[ -n "$mark" ] || ccr_no_links "$CCR_PROFILE/$CCR_MARK"
+"$(ccr_merge_python)" -I "$CCR_LIB/settings_merge.py" check "$CCR_PROFILE/settings.json"
+
 [ "$(uname)" = Darwin ] || die "macOS only for now"
 [ "$(uname -m)" = arm64 ] || die "Apple Silicon only (the locked cryptography wheel is arm64-only on macOS)"
 command -v claude >/dev/null || die "Claude Code not on PATH"
@@ -93,8 +98,8 @@ chmod 600 "$CCR_HDR"
 echo "==> proxy config and profile $CCR_PROFILE"
 "$py" -I "$CCR_LIB/settings_merge.py" config "$CCR_HOME/config.yaml" "$CCR_SONNET" "$CCR_OPUS" "$CCR_HAIKU"
 mkdir -p "$CCR_PROFILE"
-# Refuse a symlinked or invalid settings.json before the marker exists, so an aborted
-# install never leaves a marker without the state uninstall needs.
+# Recheck right before the marker exists, so an aborted install never leaves a marker
+# without the state uninstall needs.
 "$py" -I "$CCR_LIB/settings_merge.py" check "$CCR_PROFILE/settings.json"
 if [ -z "$mark" ]; then
   # a fresh marker: drop any state left from an earlier, half-removed install

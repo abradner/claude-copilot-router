@@ -19,8 +19,14 @@ if [ -e "$CCR_PROFILE/$CCR_MARK" ] || [ -L "$CCR_PROFILE/$CCR_MARK" ]; then
   case $mark in
     created) profile_action=delete ;;
     adopted) profile_action=clean; py="$(ccr_merge_python)"
-      # stop before the prompt, not halfway, if settings.json cannot be edited safely
-      "$py" -I "$CCR_LIB/settings_merge.py" check "$CCR_PROFILE/settings.json" ;;
+      # stop before the prompt, not halfway, if settings.json or the state files cannot be
+      # read and edited safely
+      st=()
+      for f in .ccr-kit-prev.json .ccr-shared-keys.json; do
+        [[ -e $CCR_PROFILE/$f || -L $CCR_PROFILE/$f ]] && st+=("$CCR_PROFILE/$f")
+      done
+      [[ ! -L $CCR_PROFILE/.ccr-linked-from ]] || die "$CCR_PROFILE/.ccr-linked-from is a symlink; remove it"
+      "$py" -I "$CCR_LIB/settings_merge.py" check "$CCR_PROFILE/settings.json" "${st[@]}" ;;
     *) why="its $CCR_MARK marker holds '$mark', not created or adopted; inspect it and remove it by hand" ;;
   esac
 fi
@@ -39,8 +45,11 @@ case $profile_action in
   delete) rm -rf -- "$CCR_PROFILE" ;;
   clean)
     ccr_unlink
-    "$py" -I "$CCR_LIB/settings_merge.py" unkit "$CCR_PROFILE/settings.json" "$CCR_PROFILE/.ccr-kit-prev.json" "$CCR_KEY"
-    rm -f -- "$CCR_PROFILE/$CCR_MARK" ;;
+    "$py" -I "$CCR_LIB/settings_merge.py" unkit "$CCR_PROFILE/settings.json" "$CCR_PROFILE/.ccr-kit-prev.json" \
+      "$CCR_KEY" "http://127.0.0.1:$CCR_PORT"
+    # marker first, state last: a rerun after an interrupt still has the saved values
+    rm -f -- "$CCR_PROFILE/$CCR_MARK"
+    rm -f -- "$CCR_PROFILE/.ccr-kit-prev.json" ;;
   skip) echo "skipped $CCR_PROFILE: $why" ;;
 esac
 rm -rf -- "$CCR_HOME"

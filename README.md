@@ -33,6 +33,9 @@ claude-copilot ──► LiteLLM proxy (127.0.0.1:4141) ──► GitHub Copilot
 git clone https://github.com/abradner/claude-copilot-router && cd claude-copilot-router
 ```
 
+Clone it anywhere except `~/.config/claude-copilot-router`: that is where the router keeps its
+state, and the installer refuses to use a git checkout there.
+
 ```bash
 ./install.sh
 ```
@@ -91,7 +94,7 @@ on the next run. (All router state lives under `$XDG_CONFIG_HOME/claude-copilot-
 | Flag | Default | |
 |---|---|---|
 | `--port N` | `4141` | 4000 is refused: LiteLLM silently moves to a random port when 4000 is busy |
-| `--profile DIR` | `~/.claude-copilot` | a directory under `$HOME` (letters, digits, `._/@+-`; relative paths and symlinks are resolved). Never `~/.claude`, `~/.config`, anything inside them, or the `CLAUDE_CONFIG_DIR` of the shell you run it from. To move it later, run `./uninstall.sh` first |
+| `--profile DIR` | `~/.claude-copilot` | a directory under `$HOME` (letters, digits, `._/@+-`; relative paths and symlinks are resolved). Never `~/.claude`, `~/.config`, anything inside them, or the `CLAUDE_CONFIG_DIR` of the shell you run it from (unless that is the router's own profile). To move it later, run `./uninstall.sh` first |
 | `--alias NAME` | `claude-copilot` | shell alias that starts Claude Code with this profile (not `claude`) |
 | `--sonnet` / `--opus` / `--haiku ID` | `claude-*-5.5` | Copilot model ids from `./models.sh` |
 | `--main sonnet\|opus\|haiku` | `sonnet` | model Claude Code starts on |
@@ -103,7 +106,7 @@ on the next run. (All router state lives under `$XDG_CONFIG_HOME/claude-copilot-
 Re-running `./install.sh` is safe: it rewrites only the keys it owns in the profile's
 `settings.json` (`apiKeyHelper` and its `env` entries) and keeps everything else, including hooks.
 The first run saves what those keys held, for uninstall to restore. If the profile's
-`settings.json` is a symlink or not valid JSON, the installer stops and leaves it alone: it never
+`settings.json` is a symlink or not valid JSON, the installer stops before changing anything: it never
 writes through a link, so it cannot change the file a link points at (say `~/.claude/settings.json`).
 
 ## Your normal Claude Code setup and this one
@@ -194,7 +197,8 @@ Run the tests, then `./install.sh` to sync the venv.
 
 Removes the venv, tokens, key, config and alias, and the router profile if this tool created it.
 An `--adopt`ed profile stays: the router's links and marker are removed and the settings it replaced
-are restored. A profile whose marker is missing or unrecognised is left alone.
+are restored. If that saved state is missing, only values that are plainly the router's are removed,
+and uninstall names any it kept for you to check. A profile whose marker is missing or unrecognised is left alone.
 Shared links are removed, never followed. Then revoke the token on GitHub: Settings →
 Applications → Authorized GitHub Apps → GitHub Copilot Plugin (this also signs out other editors
 that use that app).

@@ -43,7 +43,7 @@ ccr_save_conf() {
   local k
   { echo "# claude-copilot-router settings (not secret). Change with install.sh flags."
     for k in CCR_PORT CCR_PROFILE CCR_ALIAS CCR_SONNET CCR_OPUS CCR_HAIKU CCR_MAIN; do print -r -- "$k=${(P)k}"; done
-  } > "$CCR_CONF"
+  } > "$CCR_CONF"   # install.sh checked it is not a link
 }
 
 ccr_conf_hint() { [ -f "$CCR_CONF" ] && print -r -- " (saved in $CCR_CONF: pass the flag again, or edit or delete that file)"; }
@@ -74,8 +74,15 @@ ccr_safe_home() {
   CCR_WHY="it must be a real directory named claude-copilot-router below \$HOME (check XDG_CONFIG_HOME)"
   [[ $CCR_HOME == "$HOME"/?* && ${CCR_HOME:t} == claude-copilot-router && $CCR_HOME == ${CCR_HOME:A} ]] || return 1
   # never this repo's own checkout, e.g. cloned to ~/.config/claude-copilot-router
-  CCR_WHY="it is (or contains) a git checkout, perhaps of this repo; clone the repo somewhere else"
-  [[ ! -e $CCR_HOME/.git && ${CCR_LIB:h} != "$CCR_HOME" && ${CCR_LIB:h} != "$CCR_HOME"/* ]]
+  CCR_WHY="it is a git checkout; clone this repo anywhere except $CCR_HOME"
+  [[ ! -e $CCR_HOME/.git ]] || return 1
+  CCR_WHY="this repo (${CCR_LIB:h}) is inside it; put the repo somewhere else"
+  [[ ${CCR_LIB:h} != "$CCR_HOME" && ${CCR_LIB:h} != "$CCR_HOME"/* ]]
+}
+
+# Files the router writes in its home are never symlinks.
+ccr_no_links() {
+  local f; for f; do [ ! -L "$f" ] || die "$f is a symlink; the router never writes through links. Remove it, then rerun"; done
 }
 
 # A profile path we are willing to create, and later rm -rf (with the marker present).
@@ -86,9 +93,11 @@ ccr_safe_profile() {
   CCR_WHY="it must be a directory below \$HOME"
   [[ $p == "$HOME"/?* ]] || return 1
   # never HOME's main Claude Code profile, ~/.config, the router home, or an XDG config dir
+  local -A label=("${HOME}/.claude" "~/.claude (your main Claude Code profile)" "${HOME}/.config" "~/.config"
+    "$CCR_HOME" "the router home" "${XDG_CONFIG_HOME:-/nonexistent}" "XDG_CONFIG_HOME (${XDG_CONFIG_HOME-})")
   for x in "$HOME/.claude" "$HOME/.config" "$CCR_HOME" ${XDG_CONFIG_HOME:+"$XDG_CONFIG_HOME"}; do
+    CCR_WHY="it is, contains or is inside ${label[$x]}"
     x="${x:A}"
-    CCR_WHY="it is, contains or is inside $x"
     [[ $p == "$x" || $p == "$x"/* || $x == "$p"/* ]] && return 1
   done
   # nor the profile in use right now, unless it is this router's own profile
