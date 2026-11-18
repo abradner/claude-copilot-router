@@ -1,6 +1,7 @@
 """Unit tests for lib/settings_merge.py: the router must never clobber a user's settings."""
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,9 @@ MODELS = ("claude-sonnet-5.5", "claude-opus-5.5", "claude-haiku-5.5")
 class MergeTests(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp(prefix="ccr-test.")
+        self.addCleanup(shutil.rmtree, self.d)
         self.dest = os.path.join(self.d, "settings.json")
+        self.state = os.path.join(self.d, ".ccr-kit-prev.json")
 
     def write(self, path, data):
         with open(path, "w") as f:
@@ -28,7 +31,7 @@ class MergeTests(unittest.TestCase):
 
     def test_kit_keeps_user_keys_and_sets_router_keys(self):
         self.write(self.dest, {"theme": "dark", "env": {"MY_VAR": "1"}, "hooks": {"Stop": []}})
-        sm.kit(self.dest, "/k/master-key", "http://127.0.0.1:4141", *MODELS, "opus")
+        sm.kit(self.dest, self.state, "/k/master-key", "http://127.0.0.1:4141", *MODELS, "opus")
         s = self.read()
         self.assertEqual(s["theme"], "dark")
         self.assertEqual(s["hooks"], {"Stop": []})
@@ -39,26 +42,56 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(s["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "claude-haiku-5-5")
         for k in sm.BLANKED:
             self.assertEqual(s["env"][k], "")
-        self.assertEqual(os.stat(self.dest).st_mode & 0o777, 0o600)
 
     def test_kit_is_idempotent(self):
-        sm.kit(self.dest, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
+        sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
         first = self.read()
-        sm.kit(self.dest, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
+        sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
         self.assertEqual(first, self.read())
 
     def test_kit_on_missing_file(self):
-        sm.kit(self.dest, "/k", "http://127.0.0.1:5000", *MODELS, "haiku")
+        sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:5000", *MODELS, "haiku")
         self.assertEqual(self.read()["env"]["ANTHROPIC_MODEL"], "claude-haiku-5-5")
+        self.assertEqual(os.stat(self.dest).st_mode & 0o777, 0o600, "new files are private")
 
-    def test_invalid_json_is_moved_aside_not_lost(self):
+    def test_invalid_json_is_left_untouched(self):
         with open(self.dest, "w") as f:
             f.write("{not json")
-        sm.kit(self.dest, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
-        backups = [n for n in os.listdir(self.d) if n.startswith("settings.json.bad-")]
-        self.assertEqual(len(backups), 1)
-        with open(os.path.join(self.d, backups[0])) as f:
-            self.assertEqual(f.read(), "{not json")
+        with self.assertRaises(SystemExit):
+            sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
+        self.assertEqual(open(self.dest).read(), "{not json")
+        self.assertEqual(sorted(os.listdir(self.d)), ["settings.json"])
+
+    def test_unkit_restores_what_kit_replaced(self):
+        mine = {"model": "opus", "apiKeyHelper": "/usr/local/bin/my-helper",
+                "env": {"ANTHROPIC_MODEL": "x", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                        "ANTHROPIC_CUSTOM_HEADERS": "h: v", "FOO": "bar"}}
+        self.write(self.dest, mine)
+        sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
+        sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:5151", *MODELS, "opus")  # rerun
+        self.assertEqual(self.read()["apiKeyHelper"], "/bin/cat /k")
+        sm.unkit(self.dest, self.state)
+        self.assertEqual(self.read(), mine)
+        self.assertFalse(os.path.exists(self.state))
+
+    def test_prekitted_profile_values_are_not_saved_as_users(self):
+        sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
+        os.remove(self.state)  # as left by a build without the state file
+        sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
+        sm.unkit(self.dest, self.state)
+        self.assertEqual(self.read(), {})
+
+    def test_symlinked_settings_stay_a_symlink_with_their_mode(self):
+        real = os.path.join(self.d, "dotfiles.json")
+        self.write(real, {"theme": "dark"})
+        os.chmod(real, 0o644)
+        os.symlink(real, self.dest)
+        sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
+        self.assertTrue(os.path.islink(self.dest))
+        self.assertEqual(os.stat(real).st_mode & 0o777, 0o644)
+        sm.unkit(self.dest, self.state)
+        self.assertTrue(os.path.islink(self.dest))
+        self.assertEqual(self.read(real), {"theme": "dark"})
 
     def test_share_and_unshare_round_trip(self):
         src = os.path.join(self.d, "src.json")
@@ -98,18 +131,18 @@ class MergeTests(unittest.TestCase):
 
     def test_unkit_removes_only_router_keys(self):
         self.write(self.dest, {"theme": "dark", "env": {"MY_VAR": "1"}})
-        sm.kit(self.dest, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
-        sm.unkit(self.dest)
+        sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
+        sm.unkit(self.dest, self.state)
         self.assertEqual(self.read(), {"theme": "dark", "env": {"MY_VAR": "1"}})
 
     def test_apikeyhelper_quotes_path(self):
-        sm.kit(self.dest, "/odd'dir/key", "http://127.0.0.1:4141", *MODELS, "sonnet")
+        sm.kit(self.dest, self.state, "/odd'dir/key", "http://127.0.0.1:4141", *MODELS, "sonnet")
         self.assertEqual(self.read()["apiKeyHelper"], "/bin/cat '/odd'\"'\"'dir/key'")
 
     def test_router_keys_survive_share(self):
         src = os.path.join(self.d, "src.json")
         self.write(src, {"hooks": {}, "env": {"ANTHROPIC_API_KEY": "leak"}})
-        sm.kit(self.dest, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
+        sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
         sm.share(src, self.dest, os.path.join(self.d, "st.json"))
         self.assertEqual(self.read()["env"]["ANTHROPIC_API_KEY"], "", "env must never be copied")
 

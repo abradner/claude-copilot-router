@@ -91,17 +91,19 @@ on the next run. (All router state lives under `$XDG_CONFIG_HOME/claude-copilot-
 | Flag | Default | |
 |---|---|---|
 | `--port N` | `4141` | 4000 is refused: LiteLLM silently moves to a random port when 4000 is busy |
-| `--profile DIR` | `~/.claude-copilot` | absolute path under `$HOME` (letters, digits, `._/@+-`). To move it later, run `./uninstall.sh` first |
-| `--alias NAME` | `claude-copilot` | shell alias that starts Claude Code with this profile |
+| `--profile DIR` | `~/.claude-copilot` | a directory under `$HOME` (letters, digits, `._/@+-`; relative paths and symlinks are resolved). Never `~/.claude`, `~/.config` or anything inside them. To move it later, run `./uninstall.sh` first |
+| `--alias NAME` | `claude-copilot` | shell alias that starts Claude Code with this profile (not `claude`) |
 | `--sonnet` / `--opus` / `--haiku ID` | `claude-*-5.5` | Copilot model ids from `./models.sh` |
 | `--main sonnet\|opus\|haiku` | `sonnet` | model Claude Code starts on |
 | `--link-from DIR` | | share an existing setup, below |
 | `--no-hooks` | | with `--link-from`: link only, don't copy hooks (ignored otherwise) |
 | `--unlink` | | undo `--link-from` |
-| `--adopt` | | use an existing Claude Code profile dir as `--profile`; uninstall then leaves the dir and removes only the router's keys, links and marker |
+| `--adopt` | | use an existing Claude Code config dir (one with a `.claude.json`) as `--profile`; uninstall then leaves the dir, removes the router's links and marker, and puts back the settings the router replaced |
 
 Re-running `./install.sh` is safe: it rewrites only the keys it owns in the profile's
 `settings.json` (`apiKeyHelper` and its `env` entries) and keeps everything else, including hooks.
+The first run saves what those keys held, for uninstall to restore. A symlinked `settings.json`
+stays a symlink. If `settings.json` is not valid JSON, the installer stops and leaves it alone.
 
 ## Your normal Claude Code setup and this one
 
@@ -190,7 +192,8 @@ Run the tests, then `./install.sh` to sync the venv.
 ```
 
 Removes the venv, tokens, key, config and alias, and the router profile if this tool created it.
-An `--adopt`ed profile stays; only the router's keys, links and marker are taken out of it.
+An `--adopt`ed profile stays: the router's links and marker are removed and the settings it replaced
+are restored. A profile whose marker is missing or unrecognised is left alone.
 Shared links are removed, never followed. Then revoke the token on GitHub: Settings →
 Applications → Authorized GitHub Apps → GitHub Copilot Plugin (this also signs out other editors
 that use that app).

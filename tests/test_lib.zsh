@@ -5,7 +5,7 @@ set -u
 repo="${0:A:h:h}"
 T="$(mktemp -d "${TMPDIR:-/tmp}/ccr-test.XXXXXX")"
 [[ $T == */ccr-test.* ]] && trap 'rm -rf -- "$T"' EXIT
-export HOME="$T/home"; mkdir -p "$HOME"
+export HOME="${T:A}/home"; mkdir -p "$HOME"   # canonical, as common.sh makes it
 unset XDG_CONFIG_HOME
 pass=0; fail=0
 ok()  { echo "ok   $1"; pass=$((pass+1)); }
@@ -88,7 +88,7 @@ rm -f -- "$conf/master-key"
 
 # installer refuses bad input before installing anything
 mkdir -p "$HOME/notaprofile"; echo x > "$HOME/notaprofile/file"
-check "adopt needs a Claude profile"   '"$repo/install.sh" --profile "$HOME/notaprofile" --adopt 2>&1 | grep -q "does not look like a Claude Code profile"'
+check "adopt needs a Claude profile"   '"$repo/install.sh" --profile "$HOME/notaprofile" --adopt 2>&1 | grep -q "does not look like a Claude Code config dir"'
 mkdir -p "$HOME/oldprof"; echo created > "$HOME/oldprof/.claude-copilot-router"
 print -r -- "CCR_PROFILE=$HOME/oldprof" > "$conf/router.conf"
 check "profile move refused"           '"$repo/install.sh" --profile "$HOME/newprof" 2>&1 | grep -q "profile is moving"'
@@ -97,6 +97,55 @@ check "install refuses port 4000"      '! "$repo/install.sh" --port 4000 >/dev/n
 mkdir -p "$HOME/someprofile"; echo x > "$HOME/someprofile/file"
 check "install refuses foreign profile" '"$repo/install.sh" --profile "$HOME/someprofile" 2>&1 | grep -q "not created by this tool"'
 check "install refuses unknown flag"   '! "$repo/install.sh" --bogus >/dev/null 2>&1'
+check "install refuses alias claude"   '"$repo/install.sh" --alias claude 2>&1 | grep -q "replace your normal claude"'
+mkdir -p "$HOME/oddmark"; print -n "" > "$HOME/oddmark/.claude-copilot-router"
+check "install refuses empty marker"   '"$repo/install.sh" --profile "$HOME/oddmark" --adopt 2>&1 | grep -q "not created or adopted"'
+
+# profile paths that must never be used (and so never deleted)
+mkdir -p "$HOME/dots/claude"; ln -s "$HOME/dots/claude" "$HOME/.claude-link"
+mv "$HOME/.claude" "$HOME/.claude-real"; ln -s "$HOME/dots/claude" "$HOME/.claude"
+check "symlinked ~/.claude refused"    '! lib "CCR_PROFILE=\$HOME/dots/claude; ccr_validate"'
+check "link to ~/.claude refused"      '! lib "CCR_PROFILE=\$HOME/.claude-link; ccr_validate"'
+rm "$HOME/.claude"; mv "$HOME/.claude-real" "$HOME/.claude"
+check "inside ~/.claude refused"       '! lib "CCR_PROFILE=\$HOME/.claude/sub; ccr_validate"'
+check "foreign CLAUDE_CONFIG_DIR refused" '! lib "CLAUDE_CONFIG_DIR=\$HOME/someprofile; CCR_PROFILE=\$HOME/someprofile; ccr_validate"'
+check "own CLAUDE_CONFIG_DIR allowed"  'lib "CLAUDE_CONFIG_DIR=\$HOME/oldprof; CCR_PROFILE=\$HOME/oldprof; ccr_validate"'
+check "ancestor of XDG home refused"   '! ( XDG_CONFIG_HOME=$HOME/cfg lib "CCR_PROFILE=\$HOME/cfg; ccr_validate" )'
+check "XDG_CONFIG_HOME=HOME refused"   '! ( XDG_CONFIG_HOME=$HOME lib ccr_validate )'
+check "empty HOME refused"             '! ( HOME= lib true )'
+check "relative HOME refused"          '! ( HOME=rel lib true )'
+
+# uninstall, from hand-built states (no uv needed)
+un() { print yes | "$repo/uninstall.sh" >/dev/null 2>&1; }
+setup() {  # setup PROFILE MARKER-CONTENT
+  mkdir -p "$conf/venv/bin" "$1"; ln -sf "$(command -v python3)" "$conf/venv/bin/python"
+  print -r -- "CCR_PROFILE=$1" > "$conf/router.conf"
+  [ -n "$2" ] && print -r -- "$2" > "$1/.claude-copilot-router"
+  return 0
+}
+setup "$HOME/p-created" created; echo h > "$HOME/p-created/history.jsonl"
+un
+check "uninstall deletes created profile" '[ ! -e "$HOME/p-created" ] && [ ! -e "$conf" ]'
+setup "$HOME/p-adopted" adopted; echo '{}' > "$HOME/p-adopted/.claude.json"
+print -r -- '{"model":"opus","apiKeyHelper":"/usr/local/bin/mine","env":{"FOO":"1"}}' > "$HOME/p-adopted/settings.json"
+python3 -I "$repo/lib/settings_merge.py" kit "$HOME/p-adopted/settings.json" "$HOME/p-adopted/.ccr-kit-prev.json" /k http://127.0.0.1:4141 claude-a claude-b claude-c sonnet
+rm "$conf/venv/bin/python"   # uninstall must not need the venv
+un
+check "uninstall keeps adopted profile" '[ -f "$HOME/p-adopted/.claude.json" ] && [ ! -e "$HOME/p-adopted/.claude-copilot-router" ]'
+check "uninstall restores adopted settings" 'python3 -I -c "import json,sys; sys.exit(json.load(open(sys.argv[1])) != {\"model\": \"opus\", \"apiKeyHelper\": \"/usr/local/bin/mine\", \"env\": {\"FOO\": \"1\"}})" "$HOME/p-adopted/settings.json"'
+setup "$HOME/p-odd" ""; print -n "" > "$HOME/p-odd/.claude-copilot-router"; echo h > "$HOME/p-odd/keep"
+un
+check "uninstall skips empty marker"   '[ -f "$HOME/p-odd/keep" ]'
+setup "$HOME/p-none" ""; echo h > "$HOME/p-none/keep"
+un
+check "uninstall skips unmarked profile" '[ -f "$HOME/p-none/keep" ]'
+mkdir -p "$HOME/ext/prof"; echo created > "$HOME/ext/prof/.claude-copilot-router"; ln -s "$HOME/ext/prof" "$HOME/p-link"
+setup "$HOME/p-link/" ""
+un
+check "uninstall refuses symlinked profile" '[ -f "$HOME/ext/prof/.claude-copilot-router" ] && [ -d "$conf" ]'
+print -r -- "CCR_PROFILE=$HOME/p-none" > "$conf/router.conf"; print -r -- "CCR_PORT=4000" >> "$conf/router.conf"
+un
+check "stale port does not block uninstall" '[ ! -e "$conf" ]'
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

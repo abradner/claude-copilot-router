@@ -8,7 +8,7 @@
 # Model ids are Copilot ids (see ./models.sh), e.g. claude-sonnet-5.5.
 # --link-from ~/.claude shares an existing Claude Code setup: links skills/ and CLAUDE.md,
 # copies hooks, statusLine and outputStyle. --unlink undoes exactly that.
-# --adopt uses an existing Claude Code profile directory as --profile; uninstall then removes only
+# --adopt uses an existing Claude Code config dir (with .claude.json) as --profile; uninstall then removes only
 # the router's keys, links and marker from it and leaves the directory.
 # No GitHub sign-in happens here: run ./login.sh next.
 set -eu
@@ -35,20 +35,28 @@ while (( $# )); do
   esac
   shift
 done
-CCR_PROFILE="${CCR_PROFILE:A}"
+CCR_PROFILE="${CCR_PROFILE:A}"   # relative paths resolve against the current directory
 ccr_validate
 old_profile="${old_profile:A}"
-if [ "$old_profile" != "$CCR_PROFILE" ] && [ -f "$old_profile/$CCR_MARK" ]; then
-  die "the profile is moving from $old_profile; run ./uninstall.sh first (or ./install.sh --unlink, then delete or keep $old_profile yourself), then install with the new --profile"
+if [ "$old_profile" != "$CCR_PROFILE" ] && [ -e "$old_profile/$CCR_MARK" ]; then
+  die "the profile is moving from $old_profile; run ./uninstall.sh first, then install with the new --profile"
 fi
-mark=created
-if [ -d "$CCR_PROFILE" ] && [ ! -f "$CCR_PROFILE/$CCR_MARK" ] && [ -n "$(ls -A "$CCR_PROFILE")" ]; then
+# The marker says what uninstall may do: "created" (delete the profile) or "adopted" (keep it).
+# An existing marker is never changed; anything else in it stops here.
+mark=""
+if [ -e "$CCR_PROFILE/$CCR_MARK" ]; then
+  [ -f "$CCR_PROFILE/$CCR_MARK" ] && [ ! -L "$CCR_PROFILE/$CCR_MARK" ] \
+    || die "$CCR_PROFILE/$CCR_MARK is not a regular file; inspect it and remove it by hand"
+  mark="$(<"$CCR_PROFILE/$CCR_MARK")"
+  [[ $mark == (created|adopted) ]] \
+    || die "$CCR_PROFILE/$CCR_MARK holds '$mark', not created or adopted; inspect the profile, then write 'adopted' into the marker to keep the directory on uninstall"
+elif [ -d "$CCR_PROFILE" ] && [ -n "$(ls -A "$CCR_PROFILE")" ]; then
   [ -n "$adopt" ] || die "$CCR_PROFILE exists and was not created by this tool; pick another --profile, or pass --adopt"
-  [ -f "$CCR_PROFILE/settings.json" ] || [ -f "$CCR_PROFILE/.claude.json" ] \
-    || die "--adopt: $CCR_PROFILE does not look like a Claude Code profile (no settings.json or .claude.json)"
-  mark=adopted
-elif [ -f "$CCR_PROFILE/$CCR_MARK" ]; then
-  mark="$(<"$CCR_PROFILE/$CCR_MARK")"; [ "$mark" = adopted ] || mark=created
+  [ -f "$CCR_PROFILE/.claude.json" ] \
+    || die "--adopt: $CCR_PROFILE does not look like a Claude Code config dir (no .claude.json; a project's .claude/ folder is not one)"
+  new_mark=adopted
+else
+  new_mark=created
 fi
 
 [ "$(uname)" = Darwin ] || die "macOS only for now"
@@ -85,8 +93,8 @@ chmod 600 "$CCR_HDR"
 echo "==> proxy config and profile $CCR_PROFILE"
 "$py" -I "$CCR_LIB/settings_merge.py" config "$CCR_HOME/config.yaml" "$CCR_SONNET" "$CCR_OPUS" "$CCR_HAIKU"
 mkdir -p "$CCR_PROFILE"
-print -r -- "$mark" > "$CCR_PROFILE/$CCR_MARK"
-"$py" -I "$CCR_LIB/settings_merge.py" kit "$CCR_PROFILE/settings.json" "$CCR_KEY" \
+[ -n "$mark" ] || print -r -- "$new_mark" > "$CCR_PROFILE/$CCR_MARK"
+"$py" -I "$CCR_LIB/settings_merge.py" kit "$CCR_PROFILE/settings.json" "$CCR_PROFILE/.ccr-kit-prev.json" "$CCR_KEY" \
   "http://127.0.0.1:$CCR_PORT" "$CCR_SONNET" "$CCR_OPUS" "$CCR_HAIKU" "$CCR_MAIN"
 ccr_write_alias
 

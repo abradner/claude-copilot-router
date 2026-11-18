@@ -1,9 +1,12 @@
 """Write the router's files without clobbering the user's. No secrets pass through argv:
 the proxy key is referenced by path only (apiKeyHelper reads it at run time).
 
-  kit     DEST KEYPATH URL SONNET OPUS HAIKU MAIN   set the router-owned keys in the profile's
-                                                    settings.json, keep everything else
-  unkit   DEST                                      remove the router-owned keys again
+  kit     DEST STATE KEYPATH URL SONNET OPUS HAIKU MAIN
+                                                    set the router-owned keys in the profile's
+                                                    settings.json, keep everything else; the
+                                                    first run saves what those keys held in STATE
+  unkit   DEST STATE                                remove the router-owned keys, restoring
+                                                    what STATE saved
   config  DEST SONNET OPUS HAIKU                    write the LiteLLM proxy config.yaml
   share   SRC DEST STATE                            copy hooks/statusLine/outputStyle from SRC
                                                     (SRC is only read, never modified)
@@ -14,7 +17,6 @@ import os
 import shlex
 import sys
 import tempfile
-import time
 
 SHARE_KEYS = ("hooks", "statusLine", "outputStyle")
 
@@ -32,7 +34,9 @@ def cc_name(copilot_id):
     return copilot_id.replace(".", "-")
 
 
-def load(path, move_bad=True):
+def load(path):
+    """A settings file is never moved or rewritten when it is not valid JSON: that would leave
+    Claude Code running without the user's deny rules. Stop and let the user fix it."""
     if not os.path.exists(path):
         return {}
     try:
@@ -42,20 +46,18 @@ def load(path, move_bad=True):
             raise ValueError("not a JSON object")
         return data
     except ValueError as e:
-        if not move_bad:
-            sys.exit(f"error: {path} is not valid JSON ({e}); fix it first (left untouched)")
-        bak = f"{path}.bad-{time.strftime('%Y%m%dT%H%M%S')}"
-        os.replace(path, bak)
-        print(f"warning: {path} was not valid JSON ({e}); moved to {bak}", file=sys.stderr)
-        return {}
+        sys.exit(f"error: {path} is not valid JSON ({e}); fix it first (left untouched)")
 
 
 def write_atomic(path, text):
-    d = os.path.dirname(path) or "."
-    fd, tmp = tempfile.mkstemp(dir=d, prefix=".ccr.")
+    """Replace path's contents atomically. A symlink is kept (its target is written) and an
+    existing file keeps its mode; new files are 0600."""
+    path = os.path.realpath(path)
+    mode = os.stat(path).st_mode & 0o777 if os.path.exists(path) else 0o600
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".ccr.")
     with os.fdopen(fd, "w") as f:
         f.write(text)
-    os.chmod(tmp, 0o600)
+    os.chmod(tmp, mode)
     os.replace(tmp, path)
 
 
@@ -63,35 +65,53 @@ def save(path, data):
     write_atomic(path, json.dumps(data, indent=2) + "\n")
 
 
-def kit(dest, keypath, url, sonnet, opus, haiku, main):
+def kit(dest, state, keypath, url, sonnet, opus, haiku, main):
     models = {"sonnet": cc_name(sonnet), "opus": cc_name(opus), "haiku": cc_name(haiku)}
     s = load(dest)
-    s["apiKeyHelper"] = f"/bin/cat {shlex.quote(keypath)}"
-    env = s.get("env") if isinstance(s.get("env"), dict) else {}
-    env.update({
+    helper = f"/bin/cat {shlex.quote(keypath)}"
+    ours = {
         "ANTHROPIC_BASE_URL": url,
         "ANTHROPIC_MODEL": models[main],
         "ANTHROPIC_DEFAULT_SONNET_MODEL": models["sonnet"],
         "ANTHROPIC_DEFAULT_OPUS_MODEL": models["opus"],
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": models["haiku"],
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-    })
-    env.update({k: "" for k in BLANKED})
+        **{k: "" for k in BLANKED},
+    }
+    env = s.get("env") if isinstance(s.get("env"), dict) else {}
+    if not os.path.exists(state):
+        # First run: remember what the router is about to replace, so unkit can put it back.
+        # A profile that already carries this helper was kitted before STATE existed: there,
+        # values equal to the router's own are the router's, not the user's.
+        kitted = s.get("apiKeyHelper") == helper
+        prev = {"env": {k: env[k] for k in ROUTER_ENV
+                        if k in env and not (kitted and env[k] == ours[k])}}
+        if "apiKeyHelper" in s and not kitted:
+            prev["apiKeyHelper"] = s["apiKeyHelper"]
+        save(state, {"prev": prev})
+    s["apiKeyHelper"] = helper
+    env.update(ours)
     s["env"] = env
     save(dest, s)
 
 
-def unkit(dest):
+def unkit(dest, state):
+    prev = load(state).get("prev", {})
     s = load(dest)
     s.pop("apiKeyHelper", None)
+    if "apiKeyHelper" in prev:
+        s["apiKeyHelper"] = prev["apiKeyHelper"]
     env = s.get("env") if isinstance(s.get("env"), dict) else {}
     for k in ROUTER_ENV:
         env.pop(k, None)
+    env.update(prev.get("env", {}))
     if env:
         s["env"] = env
     else:
         s.pop("env", None)
     save(dest, s)
+    if os.path.exists(state):
+        os.remove(state)
 
 
 def config(dest, sonnet, opus, haiku):
@@ -109,7 +129,7 @@ def config(dest, sonnet, opus, haiku):
 
 
 def share(src, dest, state):
-    sv = load(src, move_bad=False)
+    sv = load(src)
     s = load(dest)
     st = load(state)
     prev = st.get("prev", {})          # values the profile had before the first share

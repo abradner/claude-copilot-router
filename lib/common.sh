@@ -1,7 +1,12 @@
 # Sourced by every script. No secrets here.
 # Paths and settings. Non-secret overrides live in $CCR_HOME/router.conf (written by install.sh).
 
-CCR_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/claude-copilot-router"
+die() { echo "error: $*" >&2; exit 1; }
+
+# Every path below is compared and deleted in canonical form (symlinks and .. resolved).
+[[ ${HOME:-} == /?* && -d $HOME ]] || die "HOME must be an existing absolute directory: '${HOME:-}'"
+HOME="${HOME:A}"
+CCR_HOME="${${XDG_CONFIG_HOME:-$HOME/.config}:A}/claude-copilot-router"
 CCR_TOKENS="$CCR_HOME/tokens"
 CCR_VENV="$CCR_HOME/venv"
 CCR_KEY="$CCR_HOME/master-key"
@@ -19,8 +24,6 @@ CCR_SONNET=claude-sonnet-5.5
 CCR_OPUS=claude-opus-5.5
 CCR_HAIKU=claude-haiku-5.5
 CCR_MAIN=sonnet
-
-die() { echo "error: $*" >&2; exit 1; }
 
 # Read router.conf as data (KEY=VALUE lines, known keys only), never as code.
 ccr_load_conf() {
@@ -43,27 +46,49 @@ ccr_save_conf() {
   } > "$CCR_CONF"
 }
 
+ccr_conf_hint() { [ -f "$CCR_CONF" ] && print -r -- " (saved in $CCR_CONF: pass the flag again, or edit or delete that file)"; }
+
 ccr_validate() {
-  [[ $CCR_PORT == <1024-65535> ]] || die "port must be 1024-65535: $CCR_PORT"
-  [ "$CCR_PORT" != 4000 ] || die "port 4000 is not allowed: LiteLLM silently moves to a random port when 4000 is busy"
-  [[ $CCR_ALIAS =~ '^[A-Za-z][A-Za-z0-9_-]*$' ]] || die "bad alias name: $CCR_ALIAS"
-  [[ $CCR_PROFILE =~ '^/[A-Za-z0-9._/@+-]+$' ]] || die "profile must be an absolute path of letters, digits and ._/@+- only: $CCR_PROFILE"
-  ccr_safe_profile "$CCR_PROFILE" || die "refusing profile path $CCR_PROFILE"
+  local hint="$(ccr_conf_hint)"
+  [[ $CCR_PORT == <1024-65535> ]] || die "port must be 1024-65535: $CCR_PORT$hint"
+  [ "$CCR_PORT" != 4000 ] || die "port 4000 is not allowed: LiteLLM silently moves to a random port when 4000 is busy$hint"
+  [[ $CCR_ALIAS =~ '^[A-Za-z][A-Za-z0-9_-]*$' ]] || die "bad alias name: $CCR_ALIAS$hint"
+  [ "$CCR_ALIAS" != claude ] || die "--alias claude would replace your normal claude command$hint"
+  ccr_validate_profile
   local m; for m in "$CCR_SONNET" "$CCR_OPUS" "$CCR_HAIKU"; do
-    [[ $m =~ '^claude-[a-z0-9.-]+$' ]] || die "model ids must look like claude-<name>: $m"
+    [[ $m =~ '^claude-[a-z0-9.-]+$' ]] || die "model ids must look like claude-<name>: $m$hint"
   done
-  [[ $CCR_MAIN == (sonnet|opus|haiku) ]] || die "--main must be sonnet, opus or haiku: $CCR_MAIN"
+  [[ $CCR_MAIN == (sonnet|opus|haiku) ]] || die "--main must be sonnet, opus or haiku: $CCR_MAIN$hint"
+}
+
+# The checks uninstall needs too: profile and router home are paths we may delete.
+ccr_validate_profile() {
+  local hint="$(ccr_conf_hint)"
+  [[ $CCR_PROFILE =~ '^/[A-Za-z0-9._/@+-]+$' ]] || die "profile must be a path of letters, digits and ._/@+- only: $CCR_PROFILE$hint"
+  ccr_safe_profile "$CCR_PROFILE" || die "refusing profile path $CCR_PROFILE$hint"
+  ccr_safe_home || die "refusing router home $CCR_HOME: it must be a directory named claude-copilot-router below \$HOME (check XDG_CONFIG_HOME)"
+}
+
+# The router's own state dir, which uninstall rm -rf's.
+ccr_safe_home() {
+  [[ $CCR_HOME == "$HOME"/?* && ${CCR_HOME:t} == claude-copilot-router && $CCR_HOME == ${CCR_HOME:A} ]]
 }
 
 # A profile path we are willing to create, and later rm -rf (with the marker present).
+# Compared canonically, so a symlink to ~/.claude (or anything else listed) is refused too.
 ccr_safe_profile() {
-  local p="${1%/}" h
-  for h in "$HOME" "${HOME:A}"; do   # HOME itself may sit behind a symlink
-    case "$p" in
-      ""|/|"$h"|"$h/.claude"|"$h/.config"|"${CCR_HOME%/}"|/Users|/home|/tmp|/private|/private/tmp) return 1 ;;
-    esac
+  local p="${1:A}" x
+  [[ $p == "$HOME"/?* ]] || return 1
+  # never HOME's main Claude Code profile, ~/.config, the router home, or an XDG config dir
+  for x in "$HOME/.claude" "$HOME/.config" "$CCR_HOME" ${XDG_CONFIG_HOME:+"$XDG_CONFIG_HOME"}; do
+    x="${x:A}"
+    [[ $p == "$x" || $p == "$x"/* || $x == "$p"/* ]] && return 1
   done
-  [[ $p == "$HOME"/?* || $p == "${HOME:A}"/?* ]]
+  # nor the profile in use right now, unless it is this router's own profile
+  if [[ -n ${CLAUDE_CONFIG_DIR:-} && $p == ${CLAUDE_CONFIG_DIR:A} && ! -f $p/$CCR_MARK ]]; then
+    return 1
+  fi
+  return 0
 }
 
 # Claude Code wants Anthropic-style names (dashes); Copilot ids may use dots.
@@ -91,6 +116,12 @@ ccr_scrub() {
 ccr_python() {
   [ -x "$CCR_VENV/bin/python" ] || die "LiteLLM not installed; run ./install.sh"
   print -r -- "$CCR_VENV/bin/python"
+}
+# settings_merge.py is stdlib-only: any python3 will do, so uninstall works without the venv.
+ccr_merge_python() {
+  if [ -x "$CCR_VENV/bin/python" ]; then print -r -- "$CCR_VENV/bin/python"
+  elif command -v python3 >/dev/null; then command -v python3
+  else die "no python3 found (needed to edit the profile's settings.json)"; fi
 }
 ccr_key_ok() {
   [ -s "$CCR_KEY" ] || die "missing $CCR_KEY; run ./install.sh"
@@ -132,7 +163,7 @@ ccr_link_from() {  # ccr_link_from SRC [--no-hooks]
   ccr_link_one "$src" CLAUDE.md
   print -r -- "$src" > "$CCR_PROFILE/.ccr-linked-from"
   if [ "${2:-}" != --no-hooks ] && [ -f "$src/settings.json" ]; then
-    "$(ccr_python)" -I "$CCR_LIB/settings_merge.py" share "$src/settings.json" "$CCR_PROFILE/settings.json" "$CCR_PROFILE/.ccr-shared-keys.json"
+    "$(ccr_merge_python)" -I "$CCR_LIB/settings_merge.py" share "$src/settings.json" "$CCR_PROFILE/settings.json" "$CCR_PROFILE/.ccr-shared-keys.json"
   fi
 }
 ccr_unlink() {  # state lives in the profile, so this always undoes that profile's links
@@ -147,6 +178,6 @@ ccr_unlink() {  # state lives in the profile, so this always undoes that profile
     rm -f -- "$CCR_PROFILE/.ccr-linked-from"
   fi
   if [ -f "$CCR_PROFILE/.ccr-shared-keys.json" ]; then
-    "$(ccr_python)" -I "$CCR_LIB/settings_merge.py" unshare "$CCR_PROFILE/settings.json" "$CCR_PROFILE/.ccr-shared-keys.json"
+    "$(ccr_merge_python)" -I "$CCR_LIB/settings_merge.py" unshare "$CCR_PROFILE/settings.json" "$CCR_PROFILE/.ccr-shared-keys.json"
   fi
 }
