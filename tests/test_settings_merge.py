@@ -102,8 +102,24 @@ class MergeTests(unittest.TestCase):
     def test_old_state_without_the_key_restores_nothing_for_it(self):
         self.write(self.state, {"prev": {"env": {}}, "existed": False})
         sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
+        self.assertEqual(self.read(self.state)["prev"]["env"], {})
         sm.unkit(self.dest, self.state, "/k", "http://127.0.0.1:4141")
-        self.assertFalse(os.path.exists(self.dest))
+        self.assertFalse(os.path.exists(self.dest), "the router's 0 is not left behind")
+
+    def test_old_state_then_uninstall_without_rerun_keeps_users_value(self):
+        # Installed (adopted) by the previous version; the user set the key since; uninstall
+        # runs with this version and no install in between.
+        self.write(self.dest, {"apiKeyHelper": "/bin/cat /k",
+                               "env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:4141",
+                                       "CLAUDE_CODE_AUTO_MODE_SERVER": "1", "FOO": "bar"}})
+        self.write(self.state, {"prev": {"env": {}}, "existed": True})
+        sm.unkit(self.dest, self.state, "/k", "http://127.0.0.1:4141")
+        self.assertEqual(self.read(), {"env": {"CLAUDE_CODE_AUTO_MODE_SERVER": "1", "FOO": "bar"}})
+
+    def test_state_keys_missing_legacy_keys_is_refused(self):
+        self.write(self.state, {"prev": {"env": {}}, "keys": []})
+        with self.assertRaises(SystemExit):
+            sm.kit(self.dest, self.state, "/k", "http://127.0.0.1:4141", *MODELS, "sonnet")
 
     def test_state_with_bad_keys_is_refused(self):
         self.write(self.state, {"prev": {}, "keys": "CLAUDE_CODE_AUTO_MODE_SERVER"})

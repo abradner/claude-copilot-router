@@ -35,9 +35,10 @@ BLANKED = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN
 LEGACY_ENV = ("ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
               "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
               "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC") + BLANKED
-# Auto mode's server-side checks run on Anthropic's servers, which Copilot is not: without this,
-# Claude Code warns on every auto mode session and falls back to its own classifier requests
-# anyway (they go through the proxy, so they use Copilot quota either way).
+# Auto mode's server-side checks need an upstream that accepts the request's `safeguards` field
+# and returns `safeguard_results`; Copilot does not. Without this, Claude Code shows a notice that
+# holds the first checked action, then falls back to its own classifier requests anyway (they go
+# through the proxy, so they use Copilot quota either way).
 ROUTER_ENV = LEGACY_ENV + ("CLAUDE_CODE_AUTO_MODE_SERVER",)
 
 
@@ -93,7 +94,8 @@ def load_state(state):
             and all(isinstance(v, str) for v in env.values())
             and isinstance(prev.get("apiKeyHelper", ""), (str, type(None)))
             and isinstance(shared, list) and all(isinstance(k, str) for k in shared)
-            and isinstance(keys, list) and all(isinstance(k, str) for k in keys)):
+            and isinstance(keys, list) and all(isinstance(k, str) for k in keys)
+            and ("keys" not in st or set(LEGACY_ENV) <= set(keys))):
         sys.exit(f"error: {state} is not in the expected shape; fix or delete it (left untouched)")
     return st
 
@@ -161,7 +163,9 @@ def unkit(dest, state, keypath, url):
         s.pop("apiKeyHelper", None)
         if "apiKeyHelper" in prev:
             s["apiKeyHelper"] = prev["apiKeyHelper"]
-        for k in ROUTER_ENV:
+        # Only the keys this STATE covers: a key the router started owning after STATE was
+        # written may hold the user's own value, which STATE never saved.
+        for k in st.get("keys", LEGACY_ENV):
             env.pop(k, None)
         env.update(prev.get("env", {}))
         existed = st.get("existed", True)

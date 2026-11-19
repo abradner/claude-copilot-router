@@ -143,8 +143,11 @@ started outside it (cron, launchd) still use your normal profile and account.
   Copilot's native `/v1/messages`.
 - **WebSearch** doesn't work (Copilot doesn't run server-side web search). WebFetch does.
 - **Auto mode** works, with Claude Code's own classifier requests: they go through the proxy and
-  use Copilot quota. Its server-side checks need Anthropic's API, so the profile sets
-  `CLAUDE_CODE_AUTO_MODE_SERVER=0`, which also stops the "this session isn't eligible" notice.
+  use Copilot quota. Its no-charge server-side checks need an upstream that handles Anthropic's
+  `safeguards` request field, which Copilot doesn't, so the profile sets
+  `CLAUDE_CODE_AUTO_MODE_SERVER=0`. That also stops the "this session isn't eligible" notice,
+  which otherwise holds the first checked action until you press Enter. Claude Code calls the
+  variable temporary; if a release drops it, expect the notice back.
 - The context window is likely smaller than in VS Code. Stay under the `ctx=` limit from
   `./models.sh` and don't use `[1m]` model ids.
 - Prompt caching: unverified. On the second turn of a long chat, `/cost` should show cache reads.

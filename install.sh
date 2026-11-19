@@ -62,7 +62,15 @@ fi
 # Check everything that will be written before writing anything, so a refusal changes nothing.
 ccr_no_links "$CCR_HOME" "$CCR_TOKENS" "$CCR_CONF" "$CCR_KEY" "$CCR_HDR" "$CCR_HOME/config.yaml" "$CCR_VENV"
 [ -n "$mark" ] || ccr_no_links "$CCR_PROFILE/$CCR_MARK"
-"$(ccr_merge_python)" -I "$CCR_LIB/settings_merge.py" check "$CCR_PROFILE/settings.json"
+# State files a rerun reads: a malformed one must stop the install here, not halfway. Without a
+# marker they are leftovers that the fresh marker below clears, so they are not checked.
+st=()
+if [ -n "$mark" ]; then
+  for f in .ccr-kit-prev.json .ccr-shared-keys.json; do
+    [[ -e $CCR_PROFILE/$f || -L $CCR_PROFILE/$f ]] && st+=("$CCR_PROFILE/$f")
+  done
+fi
+"$(ccr_merge_python)" -I "$CCR_LIB/settings_merge.py" check "$CCR_PROFILE/settings.json" "${st[@]}"
 
 [ "$(uname)" = Darwin ] || die "macOS only for now"
 [ "$(uname -m)" = arm64 ] || die "Apple Silicon only (the locked cryptography wheel is arm64-only on macOS)"
@@ -100,7 +108,7 @@ echo "==> proxy config and profile $CCR_PROFILE"
 mkdir -p "$CCR_PROFILE"
 # Recheck right before the marker exists, so an aborted install never leaves a marker
 # without the state uninstall needs.
-"$py" -I "$CCR_LIB/settings_merge.py" check "$CCR_PROFILE/settings.json"
+"$py" -I "$CCR_LIB/settings_merge.py" check "$CCR_PROFILE/settings.json" "${st[@]}"
 if [ -z "$mark" ]; then
   # a fresh marker: drop any state left from an earlier, half-removed install
   rm -f -- "$CCR_PROFILE/.ccr-kit-prev.json" "$CCR_PROFILE/.ccr-shared-keys.json" "$CCR_PROFILE/.ccr-linked-from"
