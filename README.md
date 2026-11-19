@@ -205,6 +205,8 @@ Removes the venv, tokens, key, config and alias, and the router profile if this 
 An `--adopt`ed profile stays: the router's links and marker are removed and the settings it replaced
 are restored. If that saved state is missing, only values that are plainly the router's are removed,
 and uninstall names any it kept for you to check. A profile whose marker is missing or unrecognised is left alone.
+Uninstall with the same or a newer checkout than you installed with: an older one doesn't know
+about keys added since (such as `CLAUDE_CODE_AUTO_MODE_SERVER`) and leaves them in the profile.
 Shared links are removed, never followed. Then revoke the token on GitHub: Settings →
 Applications → Authorized GitHub Apps → GitHub Copilot Plugin (this also signs out other editors
 that use that app).
