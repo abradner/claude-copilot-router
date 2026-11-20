@@ -189,6 +189,12 @@ print -r -- '{"apiKeyHelper":"/x","env":{"ANTHROPIC_MODEL":"o"}}' > "$HOME/w/set
 e2e "$repo/install.sh" --profile "$HOME/w" --adopt
 check "e2e: adopt kits the profile"    '[ "$(<$HOME/w/.claude-copilot-router)" = adopted ] && grep -q 127.0.0.1 "$HOME/w/settings.json"'
 check "e2e: adopt saved state"         '[ -f "$HOME/w/.ccr-kit-prev.json" ]'
+# a malformed state file stops a rerun before anything is written
+cp -p -- "$HOME/w/.ccr-kit-prev.json" "$HOME/w/prev.bak"; cp -p -- "$HOME/w/settings.json" "$HOME/w/settings.bak"
+print -r -- '{"prev":{"env":{"X":1}}}' > "$HOME/w/.ccr-kit-prev.json"
+e2eout "$repo/install.sh" --profile "$HOME/w" --port 4999
+check "e2e: malformed state stops rerun" '[ $rc -ne 0 ] && [[ $out == *"expected shape"* ]] && cmp -s "$HOME/w/settings.json" "$HOME/w/settings.bak" && ! grep -q 4999 "$conf/router.conf"'
+mv -f -- "$HOME/w/prev.bak" "$HOME/w/.ccr-kit-prev.json"; rm -f -- "$HOME/w/settings.bak"
 print yes | e2e "$repo/uninstall.sh"
 check "e2e: adopted settings restored" 'python3 -I -c "import json,sys; sys.exit(json.load(open(sys.argv[1])) != {\"apiKeyHelper\": \"/x\", \"env\": {\"ANTHROPIC_MODEL\": \"o\"}})" "$HOME/w/settings.json" && [ ! -e "$HOME/w/.claude-copilot-router" ] && [ -f "$HOME/w/.claude.json" ]'
 print -r -- '{"theme":"d"}' > "$HOME/.claude/settings.json"

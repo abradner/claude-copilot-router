@@ -31,9 +31,15 @@ SHARE_KEYS = ("hooks", "statusLine", "outputStyle")
 BLANKED = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
            "ANTHROPIC_PROFILE", "ANTHROPIC_CUSTOM_HEADERS",
            "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
-ROUTER_ENV = ("ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+# The env keys a state file written before it recorded "keys" covered.
+LEGACY_ENV = ("ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
               "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
               "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC") + BLANKED
+# Auto mode's server-side checks need an upstream that accepts the request's `safeguards` field
+# and returns `safeguard_results`; Copilot does not. Without this, Claude Code shows a notice that
+# holds the first checked action, then falls back to its own classifier requests anyway (they go
+# through the proxy, so they use Copilot quota either way).
+ROUTER_ENV = LEGACY_ENV + ("CLAUDE_CODE_AUTO_MODE_SERVER",)
 
 
 def cc_name(copilot_id):
@@ -83,10 +89,13 @@ def load_state(state):
     prev = st.get("prev", {})
     env = prev.get("env", {}) if isinstance(prev, dict) else None
     shared = st.get("shared", [])
+    keys = st.get("keys", [])
     if not (isinstance(prev, dict) and isinstance(env, dict)
             and all(isinstance(v, str) for v in env.values())
             and isinstance(prev.get("apiKeyHelper", ""), (str, type(None)))
-            and isinstance(shared, list) and all(isinstance(k, str) for k in shared)):
+            and isinstance(shared, list) and all(isinstance(k, str) for k in shared)
+            and isinstance(keys, list) and all(isinstance(k, str) for k in keys)
+            and ("keys" not in st or set(LEGACY_ENV) <= set(keys))):
         sys.exit(f"error: {state} is not in the expected shape; fix or delete it (left untouched)")
     return st
 
@@ -111,6 +120,7 @@ def kit(dest, state, keypath, url, sonnet, opus, haiku, main):
         "ANTHROPIC_DEFAULT_OPUS_MODEL": models["opus"],
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": models["haiku"],
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "CLAUDE_CODE_AUTO_MODE_SERVER": "0",
         **{k: "" for k in BLANKED},
     }
     env = s.get("env") if isinstance(s.get("env"), dict) else {}
@@ -123,7 +133,18 @@ def kit(dest, state, keypath, url, sonnet, opus, haiku, main):
                         if k in env and not (kitted and env[k] == ours[k])}}
         if "apiKeyHelper" in s and not kitted:
             prev["apiKeyHelper"] = s["apiKeyHelper"]
-        save(state, {"prev": prev, "existed": existed})
+        save(state, {"prev": prev, "existed": existed, "keys": list(ROUTER_ENV)})
+    else:
+        # STATE from an older version did not cover keys the router has started setting since.
+        # The router never wrote those, so any value they hold now is the user's: save it too.
+        st = load_state(state)
+        tracked = st.get("keys", LEGACY_ENV)
+        new = [k for k in ROUTER_ENV if k not in tracked]
+        if new:
+            st.setdefault("prev", {}).setdefault("env", {}).update(
+                {k: env[k] for k in new if k in env})
+            st["keys"] = sorted(set(tracked) | set(ROUTER_ENV))
+            save(state, st)
     s["apiKeyHelper"] = helper
     env.update(ours)
     s["env"] = env
@@ -142,7 +163,9 @@ def unkit(dest, state, keypath, url):
         s.pop("apiKeyHelper", None)
         if "apiKeyHelper" in prev:
             s["apiKeyHelper"] = prev["apiKeyHelper"]
-        for k in ROUTER_ENV:
+        # Only the keys this STATE covers: a key the router started owning after STATE was
+        # written may hold the user's own value, which STATE never saved.
+        for k in st.get("keys", LEGACY_ENV):
             env.pop(k, None)
         env.update(prev.get("env", {}))
         existed = st.get("existed", True)
